@@ -1,0 +1,142 @@
+/* BNTS palette (from the pixel mark) */
+:root {
+  --teal:   #19c1ca;
+  --teal-2: #04bbc1;
+  --purple: #704988;
+  --lav:    #cfc2e0;
+  --bg:     #150d1c;   /* deep aubergine, so the brand colours glow */
+  --bg-2:   #24142f;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%; height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: #fff;
+  font-family: "Segoe UI", "Noto Sans", "DejaVu Sans", system-ui, sans-serif;
+  cursor: none;
+  touch-action: none;
+  -webkit-touch-callout: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#stage {
+  position: relative;
+  width: 100vw; height: 100vh;
+  background: radial-gradient(ellipse at 50% 40%, var(--bg-2) 0%, var(--bg) 70%);
+}
+
+.screen {
+  position: absolute; inset: 0;
+  opacity: 0;
+  transition: opacity .6s ease;
+  pointer-events: none;
+}
+.screen.on { opacity: 1; }
+
+canvas { display: block; }
+
+/* ---- branding ---- */
+#mark { position: absolute; top: 2.4vh; right: 2.2vw; height: 9vh; z-index: 5; }
+#logo { position: absolute; top: 2.6vh; left: 2.2vw; height: 7vh; z-index: 5; }
+
+/* ---- standby ---- */
+#cv-standby { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+#sb-text {
+  position: absolute; left: 0; right: 0; top: 67%;
+  text-align: center;
+  padding: 0 5vw;
+  transition: opacity .5s ease, transform .5s ease;
+}
+#sb-text.swap { opacity: 0; transform: translateY(1.2vh); }
+
+#sb-title {
+  font-size: 6.4vh; font-weight: 800; letter-spacing: .01em;
+  text-shadow: 0 0 2vh var(--bg), 0 0 1vh var(--bg), 0 .4vh 0 rgba(0,0,0,.35);
+}
+#sb-sub {
+  margin-top: 1.2vh;
+  font-size: 3.3vh; color: var(--lav);
+  text-shadow: 0 0 1.5vh var(--bg), 0 0 .8vh var(--bg);
+}
+
+/* ---- live ---- */
+#live {
+  padding: 12vh 3.5vw 5.5vh;
+  display: grid;
+  grid-template-columns: 36% 1fr;
+  grid-template-rows: 1fr 27%;
+  gap: 2.2vh 2.2vw;
+}
+
+.eyebrow {
+  position: absolute; top: 4vh; left: 3.5vw;
+  font-size: 2.7vh; font-weight: 700; letter-spacing: .28em; text-transform: uppercase;
+  color: var(--lav);
+}
+.eyebrow::before {
+  content: ""; display: inline-block; width: 1.6vh; height: 1.6vh; margin-right: 1.2vh;
+  background: var(--teal); border-radius: .35vh; vertical-align: -.1vh;
+  animation: blink 1.4s steps(2, jump-none) infinite;
+}
+@keyframes blink { 50% { opacity: .25; } }
+
+.panel {
+  position: relative; overflow: hidden;
+  background: rgba(112, 73, 136, .16);
+  border: 1px solid rgba(207, 194, 224, .18);
+  border-radius: 1.6vh;
+}
+.panel canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.panel-label {
+  position: absolute; top: 1.3vh; left: 1.2vw; z-index: 2;
+  font-size: 1.9vh; letter-spacing: .22em; text-transform: uppercase;
+  color: var(--lav); opacity: .7;
+}
+
+#bpm-panel {
+  grid-row: 1 / 3;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+}
+#bpm-panel canvas { position: static; width: 13vh; height: 11.5vh; margin-bottom: 1vh; }
+#bpm-num {
+  font-size: 24vh; font-weight: 800; line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  text-shadow: 0 0 3vh rgba(25, 193, 202, .55);
+}
+#bpm-unit {
+  margin-top: .6vh;
+  font-size: 3.4vh; font-weight: 700; letter-spacing: .5em; text-indent: .5em;
+  color: var(--teal);
+}
+#bpm-tag {
+  margin-top: 2vh; font-size: 3vh; color: var(--lav);
+  min-height: 3.6vh;
+}
+
+.footnote {
+  position: absolute; bottom: 1.5vh; left: 0; right: 0; text-align: center;
+  font-size: 1.8vh; letter-spacing: .08em; color: var(--lav); opacity: .4;
+}
+
+/* ---- status chip / debug ---- */
+#chip {
+  position: absolute; left: 50%; bottom: 1.8vh; transform: translateX(-50%);
+  padding: .7vh 1.6vw; border-radius: 10vh;
+  font-size: 2vh; color: var(--lav);
+  background: rgba(112, 73, 136, .45); border: 1px solid rgba(207, 194, 224, .3);
+  opacity: 0; transition: opacity .4s; z-index: 6; white-space: nowrap;
+}
+#chip.show { opacity: 1; }
+
+#debug {
+  display: none; position: absolute; left: 1vw; top: 1vh; z-index: 9;
+  font: 1.9vh/1.3 monospace; color: var(--teal);
+  background: rgba(0, 0, 0, .55); padding: .8vh 1vw; border-radius: .6vh;
+}
+body.debug #debug { display: block; }

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BNTS Heart Rate</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="stage">
+
+    <!-- STANDBY: shown when no pulse is detected -->
+    <section id="standby" class="screen on">
+      <canvas id="cv-standby"></canvas>
+      <div id="sb-text">
+        <h1 id="sb-title">What's your heart rate?</h1>
+        <p id="sb-sub">Pop a finger on the sensor to find out</p>
+      </div>
+    </section>
+
+    <!-- LIVE: BPM number + scrolling pulse graph -->
+    <section id="live" class="screen">
+      <div class="eyebrow">Live heart rate</div>
+
+      <div id="bpm-panel" class="panel">
+        <canvas id="cv-heart"></canvas>
+        <div id="bpm-num">--</div>
+        <div id="bpm-unit">BPM</div>
+        <div id="bpm-tag">&nbsp;</div>
+      </div>
+
+      <div id="wave-panel" class="panel">
+        <span class="panel-label">Pulse</span>
+        <canvas id="cv-wave"></canvas>
+      </div>
+
+      <div id="hist-panel" class="panel">
+        <span class="panel-label">Last minute</span>
+        <canvas id="cv-hist"></canvas>
+      </div>
+
+      <div class="footnote">Just for fun &mdash; not a medical device</div>
+    </section>
+
+    <!-- BNTS branding, shared by both screens.  Drop a logo.svg next to this file to show it top-left. -->
+    <img id="logo" src="logo.svg" alt="" onerror="this.remove()">
+    <img id="mark" src="bnts-pixels.svg" alt="">
+
+    <div id="chip"></div>
+    <pre id="debug"></pre>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

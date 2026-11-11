@@ -30,9 +30,10 @@ finger → [Heart rate sensor] → Arduino (D2) ──USB──► Raspberry Pi 
 | `pi/kiosk.sh` | Launches the display full-screen and keeps it running |
 | `pi/update.sh` | Boot-time updater: pulls the latest code from GitHub and installs it |
 | `install.sh` | One-shot Pi setup (service, kiosk, autologin, auto-start) |
+| `check-arduino.sh` | Checks the Arduino is connected and sending data the display understands |
 | `flash-arduino.sh` | Flash the Arduino **from the Pi** (the Pi can do this) |
 | `uninstall.sh` | Undo everything |
-| `tests/` | Detector unit test, serial end-to-end test and updater test (run on a PC) |
+| `tests/` | Detector unit test, serial end-to-end test, updater test, and tests that build the firmware for an Uno and run it in an AVR emulator (run on a PC) |
 
 ---
 
@@ -74,6 +75,10 @@ Serial Monitor (115200 baud) to watch it explain itself in `# ...` lines.
 ### Test the sensor first (optional, from a Mac/PC)
 
 Each of these is a standalone sketch for the Arduino IDE. Upload one, then open the Serial Monitor at 115200 baud.
+
+> **After using a test sketch, flash the real firmware again** (`./flash-arduino.sh` on the Pi). The test sketches print
+> readable text, which the Pi display can't use: with one loaded, the Arduino *is* transmitting, but the display stays on
+> standby. The display shows "The Arduino isn't running the heart rate program" when it sees that.
 
 | Folder in `arduino/` | Use it to |
 |---|---|
@@ -214,12 +219,31 @@ installed keeps running.
   Undo your edits with `git -C ~/BNTS-Gallery-Projects checkout -- .` or put your settings in `/etc/default/bnts-heart` instead.
 - A change to `install.sh` itself (new packages, new services) needs `./install.sh` run again; the log tells you.
 
+## Is the Arduino sending data to the Pi?
+
+```bash
+./check-arduino.sh
+```
+
+It tells you whether the Arduino is on USB, whether the display service has its port open, and whether heart rate data is
+arriving, and it names the fix when something is wrong. For the raw lines coming from the Arduino (the display service is
+paused for about 6 seconds while it listens):
+
+```bash
+./check-arduino.sh --raw
+```
+
+A healthy Arduino sends about 50 lines a second that start with `H,`. `./flash-arduino.sh` runs the same check for you
+after it uploads and prints OK or a warning.
+
 ## Troubleshooting
 
 | What you see | Try |
 |---|---|
 | "Sensor not connected" chip on screen | Check the USB cable (data cable?). `ls /dev/ttyACM* /dev/ttyUSB*` should list a device. `journalctl -u bnts-heart -f` |
-| "Waiting for data from the sensor" | Arduino isn't running the sketch or wrong baud; re-run `./flash-arduino.sh` |
+| "Waiting for data from the sensor" | Nothing is arriving: run `./check-arduino.sh`, then try another USB cable or `./flash-arduino.sh` |
+| "The Arduino isn't running the heart rate program" | A test sketch (or something else) is on the Arduino. Run `./flash-arduino.sh` to put the real firmware back |
+| Screen stays on standby with a finger on the sensor | `./check-arduino.sh` first. If data is arriving, check the signal wire is on **D2** (switch on D) and open the Serial Monitor at 115200 baud to read the `# ...` status lines |
 | Flash fails: *permission denied* on the port | Log out and in once (adds you to `dialout`), or `reboot` |
 | Flash fails: *not in sync / programmer not responding* | Wrong `BOARD` for your clone — try the `atmega328old` Nano variant |
 | Black screen after reboot | `cat /tmp/bnts-kiosk.log` via SSH; confirm `echo $XDG_SESSION_TYPE` is `wayland` in a desktop session |

@@ -46,9 +46,12 @@ class Hub:
     def __init__(self):
         self._lock = threading.Lock()
         self._clients = set()
-        self.status = {"type": "status", "connected": False, "receiving": False,
-                       "port": None, "simulated": False}
+        self.status = {"type": "status", "connected": False, "receiving": False, "wrong_program": False,
+                       "other_line": "", "port": None, "simulated": False}
         self.last_data = 0.0
+        self.last_other = 0.0          # last time the Arduino sent text that isn't our data format
+        self.last_other_line = ""
+        self._last_warn = 0.0
 
     def subscribe(self):
         q = queue.Queue(maxsize=500)
@@ -73,6 +76,15 @@ class Hub:
     def data(self, sig, bpm, beat, amp):
         self.last_data = time.monotonic()
         self.publish({"type": "h", "s": sig, "b": bpm, "x": beat, "a": amp})
+
+    def other_line(self, text):
+        """The Arduino sent something that is not an 'H,...' data line (usually a test sketch is loaded)."""
+        now = time.monotonic()
+        self.last_other, self.last_other_line = now, text[:80]
+        if now - self._last_warn > 30:
+            self._last_warn = now
+            log.warning("The Arduino is sending text the display doesn't understand (%r). It is probably running a "
+                        "test sketch: flash the real firmware with ./flash-arduino.sh", self.last_other_line)
 
     def set_status(self, **kw):
         self.status.update(kw)
@@ -133,6 +145,10 @@ def serial_loop(hub, port_arg, baud, stop):
                     parsed = parse_line(line)
                     if parsed:
                         hub.data(*parsed)
+                    else:
+                        text = line.decode("ascii", "replace").strip()
+                        if text and not text.startswith("#"):     # '# ...' lines are our own status messages
+                            hub.other_line(text)
         except (serial.SerialException, OSError) as e:
             log.warning("Serial problem (%s) — retrying", e)
         hub.set_status(connected=False, receiving=False, port=None)
@@ -142,7 +158,10 @@ def serial_loop(hub, port_arg, baud, stop):
 def status_loop(hub, stop):
     """Once a second: tell the page whether data is actually flowing."""
     while not stop.wait(1):
-        hub.set_status(receiving=(time.monotonic() - hub.last_data) < 3)
+        now = time.monotonic()
+        receiving = (now - hub.last_data) < 3
+        wrong = (not receiving) and (now - hub.last_other) < 3
+        hub.set_status(receiving=receiving, wrong_program=wrong, other_line=hub.last_other_line if wrong else "")
 
 
 # ------------------------------------------------------------------------- simulator

@@ -39,7 +39,7 @@
     session: { samples: [], startAt: 0, nextSampleAt: 0 }, summary: null, summaryUntil: 0,
     yMin: 480, yMax: 540,
     connected: false, receiving: false, simulated: false,
-    version: '', reloadPending: false,
+    version: '', reloadPending: false, wrong: false,
     msgs: 0,
   };
 
@@ -49,7 +49,7 @@
     es.onmessage = e => {
       let m; try { m = JSON.parse(e.data); } catch (_) { return; }
       if (m.type === 'status') {
-        S.connected = !!m.connected; S.receiving = !!m.receiving; S.simulated = !!m.simulated;
+        S.connected = !!m.connected; S.receiving = !!m.receiving; S.simulated = !!m.simulated; S.wrong = !!m.wrong_program;
         // An update changed the display files: reload, but only once nobody is using the screen.
         if (m.version) { if (!S.version) S.version = m.version; else if (m.version !== S.version) S.reloadPending = true; }
       } else if (m.type === 'h') {
@@ -378,6 +378,7 @@
     const chip = $('chip');
     let msg = '';
     if (!S.connected)      msg = 'Sensor not connected — check the USB cable';
+    else if (S.wrong)      msg = "The Arduino isn't running the heart rate program — flash it again";
     else if (!S.receiving) msg = 'Waiting for data from the sensor…';
     chip.textContent = msg;
     chip.classList.toggle('show', !!msg);

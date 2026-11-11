@@ -43,7 +43,24 @@ if systemctl is-active --quiet bnts-heart.service 2>/dev/null; then
   sudo systemctl stop bnts-heart.service; RESTART=1
 fi
 trap '[ "$RESTART" = 1 ] && sudo systemctl start bnts-heart.service' EXIT
+PORT_URL="http://127.0.0.1:8080/api/status"
 
 say "Uploading"
 arduino-cli upload -p "$PORT" --fqbn "$BOARD" "$SKETCH"
-say "Flashed. The heart rate service restarts automatically."
+say "Flashed."
+if [ "$RESTART" = 1 ]; then
+  sudo systemctl start bnts-heart.service; RESTART=0
+  say "Checking the Pi can hear the Arduino (up to 15 s)"
+  ok=0
+  for _ in $(seq 1 15); do
+    sleep 1
+    if curl -sf "$PORT_URL" 2>/dev/null | grep -q '"receiving": true'; then ok=1; break; fi
+  done
+  if [ "$ok" = 1 ]; then
+    echo "   OK: the Pi is receiving heart rate data from the Arduino."
+  else
+    echo "   !! The Pi is not receiving data yet. Run ./check-arduino.sh to see why."
+  fi
+else
+  echo "The display service isn't running, so the connection wasn't checked. Run ./check-arduino.sh once it is."
+fi

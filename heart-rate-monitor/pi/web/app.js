@@ -18,15 +18,15 @@
   const HIST_SECONDS    = 60;    // BPM history strip
   const BPM_ON_AFTER    = 3;     // consecutive valid readings before switching to LIVE
   const BPM_OFF_AFTER_MS = 1500; // time without a valid BPM before going back to STANDBY
-  const PULSE_HINT_AMP  = 25;    // amplitude at which standby says "hold still..."
+  const PULSE_HINT_AMP  = 25;    // amplitude at which standby says "reading your pulse..."
   const WAVE_POINTS     = WAVE_SECONDS * SAMPLE_HZ;
 
   const MESSAGES = [
-    ["What's your heart rate?",  'Pop a finger on the sensor to find out'],
-    ['Calm… or caffeinated?', 'Rest a finger on the sensor and see'],
-    ['Got a pulse?',             "Let's see it — finger on the sensor!"],
-    ['Feel the beat',            'Press gently and hold still'],
-    ['Show us your heart',       'Place a finger on the sensor'],
+    ['Check your heart rate',      'Place a finger on the sensor to start'],
+    ['Measure your pulse',         'Rest one finger gently on the sensor and keep still'],
+    ['How fast is your heart?',    'Place a finger on the sensor to find out'],
+    ['Try it yourself',            'Rest a finger on the sensor and watch the screen'],
+    ['Try this challenge',         'Check your heart rate, do 20 star jumps, then check again'],
   ];
 
   const $ = id => document.getElementById(id);
@@ -245,8 +245,8 @@
     readingShown = reading;
     const el = $('sb-text');
     if (reading) {
-      $('sb-title').textContent = 'Hold still…';
-      $('sb-sub').textContent = 'Listening for your pulse';
+      $('sb-title').textContent = 'Reading your pulse…';
+      $('sb-sub').textContent = 'Keep your finger still on the sensor';
     } else {
       $('sb-title').textContent = MESSAGES[msgIdx][0];
       $('sb-sub').textContent = MESSAGES[msgIdx][1];
@@ -343,12 +343,10 @@
   }
 
   function moodFor(b) {
-    if (b < 55)  return 'Zen master';
-    if (b < 70)  return 'Super chill';
-    if (b < 85)  return 'Nice and steady';
-    if (b < 105) return 'Warming up';
-    if (b < 130) return 'Pumped!';
-    return 'Racing!';
+    if (b < 60)  return 'Very relaxed';
+    if (b < 100) return 'Relaxed';
+    if (b < 130) return 'Active';
+    return 'Very active';
   }
 
   let lastShown = -1, lastMood = '';

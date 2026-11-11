@@ -3,7 +3,7 @@
 An Arduino reads a pulse sensor and streams it over USB to a Raspberry Pi. The Pi's touchscreen shows
 your **live BPM**, a **scrolling pulse graph** and a pixel-bar **history**, all in the BNTS colours. When
 nobody's touching the sensor it switches to a **standby screen** (beating pixel heart, rippling pixel
-grid, sweeping ECG line, rotating "come and try me" prompts).
+grid, sweeping ECG line, simple rotating prompts, including a "do 20 star jumps, then check again" challenge).
 
 ```
  finger → [Heart rate sensor] → Arduino (A0) ──USB──► Raspberry Pi 3B+ ──► 7" touchscreen (Chromium, full-screen)
@@ -17,7 +17,8 @@ grid, sweeping ECG line, rotating "come and try me" prompts).
 
 | Path | What it is |
 |---|---|
-| `arduino/bnts_heartrate/` | Arduino sketch (`.ino`) + beat-detection code (`HeartDetector.h`) |
+| `arduino/bnts_heartrate/` | The Arduino firmware (`.ino`) + beat-detection code (`HeartDetector.h`) |
+| `arduino/sensor_test*/` | Standalone test sketches for checking the sensor from a Mac/PC (see "Test the sensor first") |
 | `pi/server.py` | Reads the Arduino's serial port, serves the display |
 | `pi/web/` | The display itself (HTML/CSS/JS, BNTS pixel mark) |
 | `pi/kiosk.sh` | Launches the display full-screen and keeps it running |
@@ -40,6 +41,29 @@ The Gravity sensor has a 3-wire cable. Check the labels on the sensor board, the
 
 Plug the Arduino into the Pi with a **data** USB cable (some cables are charge-only).
 Power: the Pi 3B+ driving the display *and* an Arduino wants a good **2.5 A** supply.
+
+### Sensor mode: the A/D switch
+
+The sensor has a small switch for its output mode, and the firmware must match it. At the top of
+`arduino/bnts_heartrate/bnts_heartrate.ino`:
+
+| Switch | Setting | What you get |
+|---|---|---|
+| **D** (digital) | `#define SENSOR_MODE_DIGITAL 1` (the default) | One pulse per heartbeat. The BPM number is real. The pulse graph on the display is a drawn pulse shape triggered by each real beat (digital mode has no waveform). |
+| **A** (analog) | `#define SENSOR_MODE_DIGITAL 0` | The real pulse waveform on the graph. |
+
+Change it, then flash again (step 2).
+
+### Test the sensor first (optional, from a Mac/PC)
+
+Each of these is a standalone sketch for the Arduino IDE. Upload one, then open the Serial Monitor at 115200 baud.
+
+| Folder in `arduino/` | Use it to |
+|---|---|
+| `sensor_test_digital/` | Check the sensor in **digital** mode: finger detected, 5 s analysis, BPM, 5 s pause, repeat |
+| `sensor_test_analog_5s/` | Same cycle for **analog** mode, with a warning if the signal looks stuck |
+| `sensor_test/` | Live signal readout (or Serial Plotter graph) in analog mode |
+| `sensor_test_dfrobot_analog/` | DFRobot's own library in analog mode, plus a signal readout |
 
 ## 2. Put the program on the Arduino
 
@@ -68,25 +92,17 @@ beats the 2nd number becomes your BPM.
 
 ## 3. Set up the Raspberry Pi
 
-### Getting the code onto the Pi
-
-The code is in the public `BNTS-Gallery-Projects` repo, so no login is needed. SSH into the Pi, then:
-
-```bash
-sudo apt install -y git
-git clone https://github.com/jackallen28/BNTS-Gallery-Projects.git
-cd BNTS-Gallery-Projects/heart-rate-monitor
-```
-
-To update later: `cd ~/BNTS-Gallery-Projects && git pull`, then `cd heart-rate-monitor && ./install.sh`.
-
 ### 3a. Install
 
 1. Flash **Raspberry Pi OS (with desktop)** (Bookworm or newer) using Raspberry Pi Imager. In the
    Imager's settings set a username, Wi-Fi and enable SSH.
-2. Attach the official 7" display (ribbon cable + power as in the Pi docs) and boot.
-3. SSH into the Pi, fetch this code (see "Getting the code onto the Pi" above), then from the `heart-rate-monitor` folder:
+2. Attach the official 7" display (ribbon cable + power as in the Pi docs), boot, and get this folder onto the Pi:
    ```bash
+   scp -r bnts-heart pi@raspberrypi.local:~/        # from your computer; or copy it with a USB stick
+   ```
+3. On the Pi (SSH or terminal):
+   ```bash
+   cd ~/bnts-heart
    ./install.sh --quiet-boot
    sudo reboot
    ```
@@ -148,8 +164,8 @@ Detection tuning is at the top of `arduino/bnts_heartrate/HeartDetector.h`:
 
 | Symptom | Change |
 |---|---|
-| Phantom BPM with nothing on the sensor | raise `MIN_AMPLITUDE` (try 30–40) |
-| Never detects a finger / weak signal | lower `MIN_AMPLITUDE` (try 12–15) |
+| Phantom BPM with nothing on the sensor (analog mode) | raise `MIN_AMPLITUDE` (try 30–40) |
+| Never detects a finger / weak signal (analog mode) | lower `MIN_AMPLITUDE` (try 12–15) |
 | BPM roughly double the real value | raise `MIN_IBI_MS` / lower `FILTER_ALPHA` |
 | Standby takes too long to return | lower `NO_BEAT_TIMEOUT_MS` |
 
@@ -174,6 +190,7 @@ or wiggling ruins the signal. Strong direct sunlight on the sensor can also swam
 ## How it talks (if you want to change things)
 
 The Arduino sends 50 lines/second at 115200 baud: `H,<signal>,<bpm>,<beat>,<amplitude>`.
+(In digital mode `signal` is the drawn pulse shape and `amplitude` is 100 once beats are heard.)
 `server.py` forwards them to the page as JSON over Server-Sent Events at `/events`.
 The page switches to LIVE after 3 consecutive valid BPMs and back to standby 1.5 s after they stop.
 

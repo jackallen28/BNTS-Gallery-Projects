@@ -33,7 +33,7 @@ finger → [Heart rate sensor] → Arduino (D2) ──USB──► Raspberry Pi 
 | `check-arduino.sh` | Checks the Arduino is connected and sending data the display understands |
 | `flash-arduino.sh` | Flash the Arduino **from the Pi** (the Pi can do this) |
 | `uninstall.sh` | Undo everything |
-| `tests/` | Detector unit test, serial end-to-end test, updater test, and tests that build the firmware for an Uno and run it in an AVR emulator (run on a PC) |
+| `tests/` | Detector unit test, serial end-to-end test, updater test, auto-login setup test, and tests that build the firmware for an Uno and run it in an AVR emulator (run on a PC) |
 
 ---
 
@@ -248,6 +248,7 @@ after it uploads and prints OK or a warning.
 | Flash fails: *not in sync / programmer not responding* | Wrong `BOARD` for your clone — try the `atmega328old` Nano variant |
 | Black screen after reboot | `cat /tmp/bnts-kiosk.log` via SSH; confirm `echo $XDG_SESSION_TYPE` is `wayland` in a desktop session |
 | A new version didn't appear after a reboot | `journalctl -u bnts-update -b` shows why (no internet, local edits in the clone, or `AUTO_UPDATE="0"`) |
+| A blue box saying "Programmer error, unrecognised boot option" during `install.sh` | An older installer called `raspi-config` with option codes your OS doesn't use. Press Enter on <Ok>, then `git pull` and run `./install.sh` again: it now sets up auto-login directly. |
 | Want the normal desktop back | `./uninstall.sh` then `sudo reboot` |
 
 ## How it talks (if you want to change things)

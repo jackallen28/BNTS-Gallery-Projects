@@ -107,18 +107,49 @@ else
   warn "This folder isn't a git clone, so automatic updates are off. Clone the repo with git to turn them on."
 fi
 
-say "Making the screen show ONLY the heart rate display"
-# 1. Boot straight into the desktop session as this user (Raspberry Pi Connect screen sharing needs a live
-#    desktop session; this also gets the kiosk up with nobody touching the Pi).
-if command -v raspi-config >/dev/null 2>&1; then
-  sudo raspi-config nonint do_boot_behaviour B4 || warn "Couldn't set desktop autologin - set it in raspi-config > System Options > Boot / Auto Login"
-  # 2. Raspberry Pi Connect screen sharing needs the Wayland desktop (labwc), not X11.
-  sudo raspi-config nonint do_wayland W3 || warn "Couldn't switch to Wayland - set raspi-config > Advanced Options > Wayland > labwc"
-else
-  warn "raspi-config not found: enable desktop autologin and the labwc (Wayland) session yourself."
-fi
+# setup_autologin: boot straight into the labwc (Wayland) desktop, logged in as this user. Raspberry Pi Connect
+# screen sharing needs a live Wayland desktop session, and this brings the kiosk up with nobody touching the Pi.
+# This edits the login screen's (lightdm's) settings directly instead of calling raspi-config, because raspi-config's
+# option codes differ between OS versions ("Programmer error, unrecognised boot option").
+setup_autologin() {
+  local ETC="${LIGHTDM_ETC:-/etc/lightdm}" SESS="${WAYLAND_SESSIONS:-/usr/share/wayland-sessions}" session="" s
+  sudo systemctl set-default graphical.target >/dev/null 2>&1 || warn "Couldn't set the boot target to the desktop."
+  if [ ! -d "$ETC" ]; then
+    warn "No lightdm login screen found. Set the Pi to start the desktop with auto-login, using the labwc session."
+    return 0
+  fi
+  if ! command -v labwc >/dev/null 2>&1; then
+    sudo apt-get install -y labwc >/dev/null 2>&1 || warn "Couldn't install labwc (the Wayland desktop that Raspberry Pi Connect screen sharing needs)."
+  fi
+  for s in "$SESS"/*labwc*.desktop; do
+    [ -e "$s" ] && { session="$(basename "$s" .desktop)"; break; }
+  done
+  if [ -z "$session" ]; then
+    warn "No labwc session found in $SESS: the Pi will log in automatically but may not use the labwc (Wayland) desktop."
+  fi
+  sudo install -d "$ETC/lightdm.conf.d"
+  {
+    echo "[Seat:*]"
+    echo "autologin-user=$ME"
+    echo "autologin-user-timeout=0"
+    if [ -n "$session" ]; then echo "autologin-session=$session"; fi
+  } | sudo tee "$ETC/lightdm.conf.d/50-bnts-autologin.conf" >/dev/null
+  # lightdm.conf is read after the drop-in folder and wins, so make sure it doesn't say something different.
+  if [ -f "$ETC/lightdm.conf" ]; then
+    sudo sed -i "s|^autologin-user=.*|autologin-user=$ME|" "$ETC/lightdm.conf"
+    if [ -n "$session" ]; then
+      sudo sed -i "s|^autologin-session=.*|autologin-session=$session|; s|^user-session=.*|user-session=$session|" "$ETC/lightdm.conf"
+    fi
+  fi
+  echo "   Auto-login as $ME into the ${session:-default} desktop session."
+  return 0
+}
 
-# 3. labwc: a per-user autostart REPLACES the stock one (/etc/xdg/labwc/autostart), which is what normally
+say "Making the screen show ONLY the heart rate display"
+# 1. Boot straight into the Wayland desktop as this user.
+setup_autologin
+
+# 2. labwc: a per-user autostart REPLACES the stock one (/etc/xdg/labwc/autostart), which is what normally
 #    launches the taskbar, desktop icons/wallpaper and pop-up helpers. Ours starts only the kiosk.
 CFG="$HOME/.config/labwc"
 mkdir -p "$CFG"
@@ -145,7 +176,7 @@ command -v kanshi >/dev/null 2>&1 && /usr/bin/kanshi >/dev/null 2>&1 &
     && systemctl --user restart rpi-connect-wayvnc.service ) >/dev/null 2>&1 &
 EOF
 
-# 4. Optional: no boot text / logo / blinking cursor
+# 3. Optional: no boot text / logo / blinking cursor
 if [ "$QUIET_BOOT" = 1 ]; then
   say "Hiding boot messages"
   CMD=/boot/firmware/cmdline.txt; [ -f "$CMD" ] || CMD=/boot/cmdline.txt

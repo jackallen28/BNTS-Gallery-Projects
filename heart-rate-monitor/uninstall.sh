@@ -8,6 +8,7 @@ sudo rm -f /etc/systemd/system/bnts-heart.service /etc/systemd/system/bnts-updat
 sudo systemctl daemon-reload
 pkill -f /opt/bnts-heart/kiosk.sh 2>/dev/null
 sudo rm -rf /opt/bnts-heart /etc/default/bnts-heart
+sudo rm -f /etc/lightdm/lightdm.conf.d/50-bnts-autologin.conf
 
 CFG="$HOME/.config/labwc"
 if [ -f "$CFG/autostart.before-bnts" ]; then mv -f "$CFG/autostart.before-bnts" "$CFG/autostart"

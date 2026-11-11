@@ -1,7 +1,7 @@
 /* BNTS heart rate display.
  * Listens to /events (from server.py) and draws two screens:
  *   - STANDBY: animated pixel heart + rippling pixel grid, shown while no pulse is detected
- *   - LIVE:    big BPM number, scrolling pulse graph, pixel-bar history
+ *   - LIVE:    big BPM number (refreshed every few seconds) and a scrolling pulse graph
  * Add ?debug to the URL for an on-screen readout.
  */
 (() => {
@@ -15,7 +15,7 @@
   const FRAME_MS        = 33;    // ~30 fps keeps the Pi 3 cool
   const WAVE_SECONDS    = 6;     // width of the scrolling graph
   const SAMPLE_HZ       = 50;    // must match the Arduino
-  const HIST_SECONDS    = 60;    // BPM history strip
+  const BPM_UPDATE_MS   = 3000;  // the big BPM number refreshes this often (the average runs continuously)
   const BPM_ON_AFTER    = 3;     // consecutive valid readings before switching to LIVE
   const BPM_OFF_AFTER_MS = 1500; // time without a valid BPM before going back to STANDBY
   const PULSE_HINT_AMP  = 25;    // amplitude at which standby says "reading your pulse..."
@@ -36,8 +36,9 @@
   // ---- state ---------------------------------------------------------------
   const S = {
     mode: 'standby', modeAt: 0,
-    wave: [], hist: [], lastHistAt: 0,
-    bpm: 0, shownBpm: 0, validRun: 0, lastValid: 0,
+    wave: [],
+    bpm: 0, shownBpm: 0, shownTarget: 0, bpmSum: 0, bpmCount: 0, nextShowAt: 0,
+    validRun: 0, lastValid: 0,
     beatAt: -99999, amp: 0, readingUntil: 0,
     yMin: 480, yMax: 540,
     connected: false, receiving: false, simulated: false,
@@ -69,10 +70,7 @@
       S.bpm = m.b; S.validRun++; S.lastValid = now;
       if (m.x) S.beatAt = now;
       if (S.mode === 'standby' && S.validRun >= BPM_ON_AFTER) setMode('live', now);
-      if (S.mode === 'live' && now - S.lastHistAt >= 1000) {
-        S.hist.push(m.b); if (S.hist.length > HIST_SECONDS) S.hist.shift();
-        S.lastHistAt = now;
-      }
+      if (S.mode === 'live') { S.bpmSum += m.b; S.bpmCount++; }   // averaged in the background
     } else {
       S.validRun = 0;
       if (m.a >= PULSE_HINT_AMP) S.readingUntil = now + 800;
@@ -83,7 +81,10 @@
     S.mode = mode; S.modeAt = now;
     $('live').classList.toggle('on', mode === 'live');
     $('standby').classList.toggle('on', mode === 'standby');
-    if (mode === 'live') { S.shownBpm = S.bpm; S.hist = [S.bpm]; S.lastHistAt = now; }
+    if (mode === 'live') {
+      S.shownBpm = S.shownTarget = S.bpm;            // show the first reading straight away
+      S.bpmSum = S.bpmCount = 0; S.nextShowAt = now + BPM_UPDATE_MS;
+    }
   }
 
   // ---- canvas helpers ---------------------------------------------------------
@@ -255,7 +256,7 @@
   }
 
   // ---- LIVE screen ---------------------------------------------------------------
-  const cvWave = $('cv-wave'), cvHist = $('cv-hist'), cvHeart = $('cv-heart');
+  const cvWave = $('cv-wave'), cvHeart = $('cv-heart');
 
   function drawWave(now) {
     const [ctx, w, h] = fit(cvWave);
@@ -290,8 +291,8 @@
     const glow = ctx.createLinearGradient(0, 0, w, 0);
     glow.addColorStop(0, 'rgba(25,193,202,0)'); glow.addColorStop(0.5, 'rgba(25,193,202,0.16)');
     glow.addColorStop(1, 'rgba(25,193,202,0.2)');
-    ctx.strokeStyle = glow; ctx.lineWidth = h * 0.05; ctx.stroke();                          // cheap glow
-    ctx.strokeStyle = grad; ctx.lineWidth = Math.max(2.5, h * 0.016); ctx.stroke();
+    ctx.strokeStyle = glow; ctx.lineWidth = h * 0.034; ctx.stroke();                          // cheap glow
+    ctx.strokeStyle = grad; ctx.lineWidth = Math.max(2.5, h * 0.011); ctx.stroke();
 
     // glowing head + ripple on every beat
     const hx = X(n - 1), hy = Y(S.wave[n - 1]);
@@ -301,28 +302,6 @@
       ctx.strokeStyle = `rgba(207,194,224,${0.8 * (1 - age / 0.6)})`; ctx.lineWidth = 2; ctx.stroke();
     }
     ctx.beginPath(); ctx.arc(hx, hy, h * 0.028, 0, 7); ctx.fillStyle = LAV; ctx.fill();
-  }
-
-  function drawHist() {
-    const [ctx, w, h] = fit(cvHist);
-    ctx.clearRect(0, 0, w, h);
-    const top = h * 0.22, rows = 5, cell = (h - top - h * 0.06) / rows, gap = Math.max(2, cell * 0.12);
-    const cols = Math.floor((w - gap) / cell);
-    const data = S.hist.slice(-cols);
-    const x0 = w - gap / 2 - data.length * cell + 0;           // newest on the right
-    ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-    data.forEach((bpm, i) => {
-      const filled = 1 + Math.round(clamp((bpm - 45) / 80, 0, 1) * (rows - 1));
-      const newest = i === data.length - 1;
-      for (let r = 0; r < filled; r++) {
-        const y = h - h * 0.03 - (r + 1) * cell;
-        ctx.globalAlpha = newest ? 1 : 0.9;
-        ctx.fillStyle = newest ? LAV : (r < 2 ? PURPLE : (r < 4 ? TEAL2 : TEAL));
-        rr(ctx, x0 + i * cell + gap / 2, y + gap / 2, cell - gap, cell - gap, cell * 0.16); ctx.fill();
-        ctx.globalAlpha = 0.5; ctx.stroke();
-      }
-    });
-    ctx.globalAlpha = 1;
   }
 
   const HEART_PX = 9, HEART_PY = 8;
@@ -350,11 +329,16 @@
   }
 
   let lastShown = -1, lastMood = '';
-  function updateLiveText() {
-    S.shownBpm += (S.bpm - S.shownBpm) * 0.25;
+  function updateLiveText(now) {
+    // Every BPM_UPDATE_MS, show the average of everything received since the last update.
+    if (now >= S.nextShowAt) {
+      if (S.bpmCount > 0) { S.shownTarget = Math.round(S.bpmSum / S.bpmCount); S.bpmSum = S.bpmCount = 0; }
+      S.nextShowAt = now + BPM_UPDATE_MS;
+    }
+    S.shownBpm += (S.shownTarget - S.shownBpm) * 0.25;
     const v = Math.round(S.shownBpm);
     if (v !== lastShown) { $('bpm-num').textContent = v; lastShown = v; }
-    const mood = moodFor(S.bpm);
+    const mood = moodFor(S.shownTarget);
     if (mood !== lastMood) { $('bpm-tag').textContent = mood; lastMood = mood; }
   }
 
@@ -380,7 +364,7 @@
 
     const fading = now - S.modeAt < 800;
     if (S.mode === 'standby' || fading) { drawStandby(now / 1000); updateStandbyText(now); }
-    if (S.mode === 'live' || fading) { drawWave(now); drawHist(); drawHeartIcon(now); updateLiveText(); }
+    if (S.mode === 'live' || fading) { drawWave(now); drawHeartIcon(now); updateLiveText(now); }
     updateChip();
 
     frames++;
@@ -388,7 +372,7 @@
       fps = frames; frames = 0; fpsAt = now;
       if (document.body.classList.contains('debug')) {
         $('debug').textContent =
-          `mode ${S.mode}  fps ${fps}\nbpm ${S.bpm}  amp ${S.amp}\nwave ${S.wave.length}  msgs ${S.msgs}\n` +
+          `mode ${S.mode}  fps ${fps}\nbpm ${S.bpm}  shown ${S.shownTarget}  amp ${S.amp}\nwave ${S.wave.length}  msgs ${S.msgs}\n` +
           `conn ${S.connected}  rx ${S.receiving}${S.simulated ? '  (simulated)' : ''}`;
       }
     }

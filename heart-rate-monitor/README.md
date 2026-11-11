@@ -1,7 +1,7 @@
 # BNTS Heart Rate
 
 An Arduino reads a pulse sensor and streams it over USB to a Raspberry Pi. The Pi's touchscreen shows
-your **live BPM**, a **scrolling pulse graph** and a pixel-bar **history**, all in the BNTS colours. When
+your **live BPM** (refreshed every 3 seconds so it doesn't jump around) and a **scrolling pulse graph**, all in the BNTS colours. When
 nobody's touching the sensor it switches to a **standby screen** (beating pixel heart, rippling pixel
 grid, sweeping ECG line, simple rotating prompts, including a "do 20 star jumps, then check again" challenge).
 

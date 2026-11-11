@@ -137,13 +137,16 @@ def _g(x, mu, sd):
 
 
 def simulate_loop(hub, mode, stop):
-    """Fake Arduino: finger on/off cycle with a wandering heart rate."""
+    """Fake Arduino that behaves like the real firmware: a finger is confirmed after ~3 s, the first
+    reading is ready at that moment, then the reading only changes every 3 s."""
     hub.set_status(connected=True, receiving=True, port="simulator", simulated=True)
     t0 = time.monotonic()
     phase = 0.0
     bpm_f = 72.0
-    shown_bpm = 0
-    beats_since_on = 0
+    published = 0
+    next_publish = 0.0
+    finger_since = 0.0
+    last_beat_t = 0.0
     was_on = False
     while not stop.is_set():
         t = time.monotonic() - t0
@@ -154,7 +157,8 @@ def simulate_loop(hub, mode, stop):
         else:  # cycle: 8 s idle, 30 s finger
             finger = (t % 38) > 8
         if finger and not was_on:
-            beats_since_on = 0
+            finger_since = t
+            published = 0
             bpm_f = random.choice([62, 71, 78, 88, 104])
         was_on = finger
         beat = 0
@@ -164,16 +168,24 @@ def simulate_loop(hub, mode, stop):
             if phase >= 1:
                 phase -= 1
                 beat = 1
-                beats_since_on += 1
+                last_beat_t = t
             sig = 512 + 90 * (_g(phase, 0.18, 0.08) + 0.35 * _g(phase, 0.5, 0.09)) + random.uniform(-3, 3)
-            shown_bpm = int(round(bpm_f)) if beats_since_on >= 4 else 0
-            amp = 110
-            if beats_since_on < 4:
+            if published == 0 and t - finger_since >= 3.0:       # finger confirmed: first reading ready
+                published = int(round(bpm_f))
+                next_publish = t + 3.0
+            elif published and t >= next_publish:                # then a new reading every 3 s
+                published = int(round(bpm_f))
+                next_publish = t + 3.0
+            amp = 100
+            if not published:
                 beat = 0
+        elif published and t - last_beat_t < 3.0:               # finger just left: reading is held for 3 s
+            sig, amp = 512, 100
         else:
+            published = 0
             sig = 505 + random.uniform(-4, 4)
-            shown_bpm, amp, beat = 0, random.randint(3, 8), 0
-        hub.data(int(sig), shown_bpm, beat, amp)
+            amp = 0
+        hub.data(int(sig), published, beat, amp)
         stop.wait(0.02)
 
 

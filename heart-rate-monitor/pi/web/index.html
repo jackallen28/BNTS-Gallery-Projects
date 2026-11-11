@@ -9,12 +9,12 @@
 <body>
   <main id="stage">
 
-    <!-- STANDBY: shown when no pulse is detected -->
+    <!-- STANDBY: shown when nobody is touching the sensor -->
     <section id="standby" class="screen on">
       <canvas id="cv-standby"></canvas>
       <div id="sb-text">
         <h1 id="sb-title">Check your heart rate</h1>
-        <p id="sb-sub">Place a finger on the sensor to start</p>
+        <p id="sb-sub">Touch the sensor and hold</p>
       </div>
     </section>
 
@@ -26,15 +26,36 @@
         <canvas id="cv-heart"></canvas>
         <div id="bpm-num">--</div>
         <div id="bpm-unit">BPM</div>
-        <div id="bpm-tag">&nbsp;</div>
       </div>
 
       <div id="wave-panel" class="panel">
         <span class="panel-label">Pulse</span>
         <canvas id="cv-wave"></canvas>
       </div>
+    </section>
 
-      <div class="footnote">For fun only. Not a medical device.</div>
+    <!-- SUMMARY: shown for 5 seconds after the finger comes off -->
+    <section id="summary" class="screen">
+      <div class="eyebrow static">Your results</div>
+
+      <div id="sum-avg-panel" class="panel">
+        <canvas id="cv-sum-heart"></canvas>
+        <div id="sum-avg">--</div>
+        <div id="sum-avg-unit">Average BPM</div>
+      </div>
+
+      <div id="sum-chart-panel" class="panel">
+        <span class="panel-label">Heart rate</span>
+        <canvas id="cv-sum"></canvas>
+      </div>
+
+      <div id="sum-stats">
+        <div class="stat"><span class="stat-label">Lowest</span><span class="stat-value"><b id="sum-min">--</b><i>BPM</i></span></div>
+        <div class="stat"><span class="stat-label">Highest</span><span class="stat-value"><b id="sum-max">--</b><i>BPM</i></span></div>
+        <div class="stat"><span class="stat-label">Time</span><span class="stat-value"><b id="sum-time">--</b></span></div>
+      </div>
+
+      <div id="sum-timer"><div id="sum-timer-bar"></div></div>
     </section>
 
     <!-- BNTS branding, shared by both screens.  Drop a logo.svg next to this file to show it top-left. -->

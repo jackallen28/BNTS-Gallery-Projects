@@ -1,7 +1,8 @@
 /* BNTS heart rate display.
- * Listens to /events (from server.py) and draws two screens:
- *   - STANDBY: animated pixel heart + rippling pixel grid, shown while no pulse is detected
- *   - LIVE:    big BPM number (refreshed every few seconds) and a scrolling pulse graph
+ * Listens to /events (from server.py) and draws three screens:
+ *   - STANDBY: animated pixel heart + rippling pixel grid, shown while nobody is touching the sensor
+ *   - LIVE:    big BPM number and a scrolling pulse graph
+ *   - SUMMARY: 5 seconds of results (average, lowest, highest, time) after the finger comes off
  * Add ?debug to the URL for an on-screen readout.
  */
 (() => {
@@ -15,19 +16,14 @@
   const FRAME_MS        = 33;    // ~30 fps keeps the Pi 3 cool
   const WAVE_SECONDS    = 6;     // width of the scrolling graph
   const SAMPLE_HZ       = 50;    // must match the Arduino
-  const BPM_UPDATE_MS   = 3000;  // the big BPM number refreshes this often (the average runs continuously)
   const BPM_ON_AFTER    = 3;     // consecutive valid readings before switching to LIVE
-  const BPM_OFF_AFTER_MS = 1500; // time without a valid BPM before going back to STANDBY
-  const PULSE_HINT_AMP  = 25;    // amplitude at which standby says "reading your pulse..."
+  const PULSE_HINT_AMP  = 25;    // amplitude at or above this = beats are being heard
+  const END_AFTER_MS    = 300;   // finger gone this long (the Arduino has already waited 3 s) -> results screen
+  const HOLD_MAX_MS     = 12000; // safety: beats but no reading for this long also ends the session
+  const SUMMARY_MS      = 5000;  // how long the results screen stays up
+  const SESSION_SAMPLE_MS = 3000;// the readings are recorded this often for the results
+  const CONFIRM_SECONDS = 3;     // the Arduino confirms a finger for 3 s before the first reading
   const WAVE_POINTS     = WAVE_SECONDS * SAMPLE_HZ;
-
-  const MESSAGES = [
-    ['Check your heart rate',      'Place a finger on the sensor to start'],
-    ['Measure your pulse',         'Rest one finger gently on the sensor and keep still'],
-    ['How fast is your heart?',    'Place a finger on the sensor to find out'],
-    ['Try it yourself',            'Rest a finger on the sensor and watch the screen'],
-    ['Try this challenge',         'Check your heart rate, do 20 star jumps, then check again'],
-  ];
 
   const $ = id => document.getElementById(id);
   const params = new URLSearchParams(location.search);
@@ -37,9 +33,10 @@
   const S = {
     mode: 'standby', modeAt: 0,
     wave: [],
-    bpm: 0, shownBpm: 0, shownTarget: 0, bpmSum: 0, bpmCount: 0, nextShowAt: 0,
+    bpm: 0, shownBpm: 0,
     validRun: 0, lastValid: 0,
-    beatAt: -99999, amp: 0, readingUntil: 0,
+    beatAt: -99999, amp: 0, lastHeard: 0,
+    session: { samples: [], startAt: 0, nextSampleAt: 0 }, summary: null, summaryUntil: 0,
     yMin: 480, yMax: 540,
     connected: false, receiving: false, simulated: false,
     msgs: 0,
@@ -66,25 +63,42 @@
     S.wave.push(m.s);
     if (S.wave.length > WAVE_POINTS) S.wave.shift();
 
+    if (m.b > 0 || m.a >= PULSE_HINT_AMP) S.lastHeard = now;
     if (m.b > 0) {
       S.bpm = m.b; S.validRun++; S.lastValid = now;
       if (m.x) S.beatAt = now;
-      if (S.mode === 'standby' && S.validRun >= BPM_ON_AFTER) setMode('live', now);
-      if (S.mode === 'live') { S.bpmSum += m.b; S.bpmCount++; }   // averaged in the background
+      // A confirmed finger starts LIVE (and cuts the results short if a new student steps up).
+      if (S.mode !== 'live' && S.validRun >= BPM_ON_AFTER) setMode('live', now);
     } else {
       S.validRun = 0;
-      if (m.a >= PULSE_HINT_AMP) S.readingUntil = now + 800;
     }
   }
 
   function setMode(mode, now) {
     S.mode = mode; S.modeAt = now;
-    $('live').classList.toggle('on', mode === 'live');
-    $('standby').classList.toggle('on', mode === 'standby');
+    for (const id of ['standby', 'live', 'summary']) $(id).classList.toggle('on', id === mode);
     if (mode === 'live') {
-      S.shownBpm = S.shownTarget = S.bpm;            // show the first reading straight away
-      S.bpmSum = S.bpmCount = 0; S.nextShowAt = now + BPM_UPDATE_MS;
+      S.shownBpm = S.bpm;                            // the first reading is ready the moment we go live
+      S.session = { samples: [S.bpm], startAt: now, nextSampleAt: now + SESSION_SAMPLE_MS };
+      S.lastHeard = now;
     }
+  }
+
+  // The finger has gone: work out the results and show them for a few seconds.
+  function endSession(now) {
+    const samples = S.session.samples;
+    S.validRun = 0;
+    if (!samples.length) { setMode('standby', now); return; }
+    const sum = samples.reduce((a, v) => a + v, 0);
+    const secs = Math.max(0, Math.round((S.beatAt - S.session.startAt) / 1000)) + CONFIRM_SECONDS;
+    S.summary = { samples: samples.slice(), min: Math.min(...samples), max: Math.max(...samples),
+                  avg: Math.round(sum / samples.length), secs };
+    $('sum-avg').textContent = S.summary.avg;
+    $('sum-min').textContent = S.summary.min;
+    $('sum-max').textContent = S.summary.max;
+    $('sum-time').textContent = secs < 60 ? `${secs} s` : `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+    S.summaryUntil = now + SUMMARY_MS;
+    setMode('summary', now);
   }
 
   // ---- canvas helpers ---------------------------------------------------------
@@ -225,36 +239,6 @@
     ctx.globalAlpha = 1;
   }
 
-  // rotate the headline every few seconds
-  let msgIdx = 0;
-  setInterval(() => {
-    const el = $('sb-text');
-    if (S.mode !== 'standby' || performance.now() < S.readingUntil) return;
-    el.classList.add('swap');
-    setTimeout(() => {
-      msgIdx = (msgIdx + 1) % MESSAGES.length;
-      $('sb-title').textContent = MESSAGES[msgIdx][0];
-      $('sb-sub').textContent = MESSAGES[msgIdx][1];
-      el.classList.remove('swap');
-    }, 500);
-  }, 5200);
-
-  let readingShown = false;
-  function updateStandbyText(now) {
-    const reading = now < S.readingUntil;
-    if (reading === readingShown) return;
-    readingShown = reading;
-    const el = $('sb-text');
-    if (reading) {
-      $('sb-title').textContent = 'Reading your pulse…';
-      $('sb-sub').textContent = 'Keep your finger still on the sensor';
-    } else {
-      $('sb-title').textContent = MESSAGES[msgIdx][0];
-      $('sb-sub').textContent = MESSAGES[msgIdx][1];
-    }
-    el.classList.remove('swap');
-  }
-
   // ---- LIVE screen ---------------------------------------------------------------
   const cvWave = $('cv-wave'), cvHeart = $('cv-heart');
 
@@ -306,11 +290,13 @@
 
   const HEART_PX = 9, HEART_PY = 8;
   function drawHeartIcon(now) {
-    const [ctx, w, h] = fit(cvHeart);
-    ctx.clearRect(0, 0, w, h);
     const age = (now - S.beatAt) / 1000;
     const pulse = age < 0.5 ? Math.exp(-age / 0.09) : 0;
-    const s = 1 + 0.22 * pulse;
+    drawHeartOn(cvHeart, 1 + 0.22 * pulse);
+  }
+  function drawHeartOn(cv, s) {
+    const [ctx, w, h] = fit(cv);
+    ctx.clearRect(0, 0, w, h);
     const cell = Math.min(w / HEART_PX, h / HEART_PY) * 0.98, gap = Math.max(1, cell * 0.09);
     ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,0.5)';
     for (const [x, y] of HEART_CELLS) {
@@ -321,25 +307,67 @@
     }
   }
 
-  function moodFor(b) {
-    if (b < 60)  return 'Very relaxed';
-    if (b < 100) return 'Relaxed';
-    if (b < 130) return 'Active';
-    return 'Very active';
-  }
-
-  let lastShown = -1, lastMood = '';
-  function updateLiveText(now) {
-    // Every BPM_UPDATE_MS, show the average of everything received since the last update.
-    if (now >= S.nextShowAt) {
-      if (S.bpmCount > 0) { S.shownTarget = Math.round(S.bpmSum / S.bpmCount); S.bpmSum = S.bpmCount = 0; }
-      S.nextShowAt = now + BPM_UPDATE_MS;
-    }
-    S.shownBpm += (S.shownTarget - S.shownBpm) * 0.25;
+  let lastShown = -1;
+  function updateLiveText() {
+    // The Arduino already averages, cross-checks and only changes its reading every 3 s,
+    // so the display simply shows what it is given (with a quick count-up between values).
+    S.shownBpm += (S.bpm - S.shownBpm) * 0.25;
     const v = Math.round(S.shownBpm);
     if (v !== lastShown) { $('bpm-num').textContent = v; lastShown = v; }
-    const mood = moodFor(S.shownTarget);
-    if (mood !== lastMood) { $('bpm-tag').textContent = mood; lastMood = mood; }
+  }
+
+  // ---- SUMMARY screen ------------------------------------------------------------
+  const cvSum = $('cv-sum'), cvSumHeart = $('cv-sum-heart');
+
+  function drawSummary(now) {
+    const sm = S.summary;
+    if (!sm) return;
+    drawHeartOn(cvSumHeart, 1);
+    $('sum-timer-bar').style.width = (clamp(1 - (now - S.modeAt) / SUMMARY_MS, 0, 1) * 100).toFixed(1) + '%';
+
+    const [ctx, w, h] = fit(cvSum);
+    ctx.clearRect(0, 0, w, h);
+    const cell = h / 6;
+    ctx.strokeStyle = 'rgba(207,194,224,0.07)'; ctx.lineWidth = 1; ctx.beginPath();
+    for (let x = (w % cell) / 2; x < w; x += cell) { ctx.moveTo(x, 0); ctx.lineTo(x, h); }
+    for (let y = cell / 2; y < h; y += cell)       { ctx.moveTo(0, y); ctx.lineTo(w, y); }
+    ctx.stroke();
+
+    const n = sm.samples.length;
+    const span = Math.max(sm.max - sm.min, 16), mid = (sm.max + sm.min) / 2;
+    const y0 = mid - span * 0.8, y1 = mid + span * 0.8;
+    const padL = w * 0.06, padR = w * 0.06, padT = h * 0.14, padB = h * 0.1;
+    const X = i => n === 1 ? w / 2 : padL + i / (n - 1) * (w - padL - padR);
+    const Y = v => h - padB - (v - y0) / (y1 - y0) * (h - padT - padB);
+    const reveal = clamp((now - S.modeAt) / 900, 0, 1);          // the line draws itself in
+
+    // average line
+    ctx.setLineDash([h * 0.03, h * 0.03]); ctx.strokeStyle = 'rgba(207,194,224,0.45)'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(padL * 0.5, Y(sm.avg)); ctx.lineTo(w - padR * 0.5, Y(sm.avg)); ctx.stroke();
+    ctx.setLineDash([]);
+
+    // readings
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    if (n > 1) {
+      const upto = reveal * (n - 1);
+      ctx.beginPath(); ctx.moveTo(X(0), Y(sm.samples[0]));
+      for (let i = 1; i <= Math.floor(upto); i++) ctx.lineTo(X(i), Y(sm.samples[i]));
+      const f = upto - Math.floor(upto), j = Math.floor(upto);
+      if (j < n - 1 && f > 0) ctx.lineTo(X(j) + (X(j + 1) - X(j)) * f, Y(sm.samples[j]) + (Y(sm.samples[j + 1]) - Y(sm.samples[j])) * f);
+      ctx.strokeStyle = 'rgba(25,193,202,0.2)'; ctx.lineWidth = h * 0.034; ctx.stroke();
+      ctx.strokeStyle = TEAL; ctx.lineWidth = Math.max(2.5, h * 0.011); ctx.stroke();
+    }
+    // pixel markers on each reading; lowest = purple, highest = lavender
+    const sz = h * 0.05;
+    sm.samples.forEach((v, i) => {
+      if (n > 1 && i > reveal * (n - 1) + 0.001) return;
+      const isMin = v === sm.min, isMax = v === sm.max;
+      const big = (isMin || isMax) && sm.max !== sm.min;
+      const s2 = big ? sz * 1.5 : sz;
+      ctx.fillStyle = big ? (isMax ? LAV : PURPLE) : TEAL2;
+      ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 1;
+      rr(ctx, X(i) - s2 / 2, Y(v) - s2 / 2, s2, s2, s2 * 0.2); ctx.fill(); ctx.stroke();
+    });
   }
 
   // ---- status chip + debug -----------------------------------------------------------
@@ -360,11 +388,22 @@
     last = ts;
     const now = performance.now();
 
-    if (S.mode === 'live' && now - S.lastValid > BPM_OFF_AFTER_MS) { setMode('standby', now); S.validRun = 0; }
+    if (S.mode === 'live') {
+      // Record the readings for the results screen (only while beats are really arriving).
+      if (now >= S.session.nextSampleAt) {
+        S.session.nextSampleAt = now + SESSION_SAMPLE_MS;
+        if (now - S.beatAt < 1500) S.session.samples.push(S.bpm);
+      }
+      // Finger gone? (The Arduino has already waited 3 s for it to come back.)
+      if (now - S.lastHeard > END_AFTER_MS || now - S.lastValid > HOLD_MAX_MS) endSession(now);
+    } else if (S.mode === 'summary' && now >= S.summaryUntil) {
+      setMode('standby', now); S.validRun = 0;
+    }
 
     const fading = now - S.modeAt < 800;
-    if (S.mode === 'standby' || fading) { drawStandby(now / 1000); updateStandbyText(now); }
-    if (S.mode === 'live' || fading) { drawWave(now); drawHeartIcon(now); updateLiveText(now); }
+    if (S.mode === 'standby' || fading) drawStandby(now / 1000);
+    if (S.mode === 'live' || fading) { drawWave(now); drawHeartIcon(now); updateLiveText(); }
+    if (S.mode === 'summary' || fading) drawSummary(now);
     updateChip();
 
     frames++;
@@ -372,7 +411,7 @@
       fps = frames; frames = 0; fpsAt = now;
       if (document.body.classList.contains('debug')) {
         $('debug').textContent =
-          `mode ${S.mode}  fps ${fps}\nbpm ${S.bpm}  shown ${S.shownTarget}  amp ${S.amp}\nwave ${S.wave.length}  msgs ${S.msgs}\n` +
+          `mode ${S.mode}  fps ${fps}\nbpm ${S.bpm}  amp ${S.amp}\nwave ${S.wave.length}  msgs ${S.msgs}\n` +
           `conn ${S.connected}  rx ${S.receiving}${S.simulated ? '  (simulated)' : ''}`;
       }
     }

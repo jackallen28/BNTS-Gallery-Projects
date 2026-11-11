@@ -28,10 +28,11 @@ finger → [Heart rate sensor] → Arduino (D2) ──USB──► Raspberry Pi 
 | `pi/server.py` | Reads the Arduino's serial port, serves the display |
 | `pi/web/` | The display itself (HTML/CSS/JS, BNTS pixel mark) |
 | `pi/kiosk.sh` | Launches the display full-screen and keeps it running |
+| `pi/update.sh` | Boot-time updater: pulls the latest code from GitHub and installs it |
 | `install.sh` | One-shot Pi setup (service, kiosk, autologin, auto-start) |
 | `flash-arduino.sh` | Flash the Arduino **from the Pi** (the Pi can do this) |
 | `uninstall.sh` | Undo everything |
-| `tests/` | Detector unit test + serial end-to-end test (run on a PC) |
+| `tests/` | Detector unit test, serial end-to-end test and updater test (run on a PC) |
 
 ---
 
@@ -192,6 +193,27 @@ appears top-left. The pixel mark (`bnts-pixels.svg`) is top-right.
 Tip for good readings: rest a fingertip lightly on the sensor window and hold still. Pressing hard
 or wiggling ruins the signal. Strong direct sunlight on the sensor can also swamp it.
 
+## Automatic updates
+
+`install.sh` also sets up `bnts-update.service`, which runs **every time the Pi boots** (reboot, restart or power-up):
+
+1. waits up to about a minute for the internet (Wi-Fi can be slow to connect),
+2. pulls the latest code from GitHub into your clone (`git pull --ff-only`),
+3. if anything is new, copies it to `/opt/bnts-heart` and restarts the display server.
+
+The screen reloads itself to pick up the new version, but only while it is idle on the standby screen, so it never
+interrupts someone's reading. The display always starts: with no internet, or if the pull fails, the version already
+installed keeps running.
+
+- **Check what it did:** `journalctl -u bnts-update -b`
+- **Update right now:** `sudo /opt/bnts-heart/update.sh`
+- **Turn it off:** set `AUTO_UPDATE="0"` in `/etc/default/bnts-heart`
+- **Firmware is never flashed automatically.** If an update changes the Arduino firmware, the log says so; run
+  `./flash-arduino.sh` yourself so an Arduino is never reprogrammed by surprise.
+- If you change files inside the clone by hand, `git pull` can refuse to overwrite them (the log says "git pull failed").
+  Undo your edits with `git -C ~/BNTS-Gallery-Projects checkout -- .` or put your settings in `/etc/default/bnts-heart` instead.
+- A change to `install.sh` itself (new packages, new services) needs `./install.sh` run again; the log tells you.
+
 ## Troubleshooting
 
 | What you see | Try |
@@ -201,6 +223,7 @@ or wiggling ruins the signal. Strong direct sunlight on the sensor can also swam
 | Flash fails: *permission denied* on the port | Log out and in once (adds you to `dialout`), or `reboot` |
 | Flash fails: *not in sync / programmer not responding* | Wrong `BOARD` for your clone — try the `atmega328old` Nano variant |
 | Black screen after reboot | `cat /tmp/bnts-kiosk.log` via SSH; confirm `echo $XDG_SESSION_TYPE` is `wayland` in a desktop session |
+| A new version didn't appear after a reboot | `journalctl -u bnts-update -b` shows why (no internet, local edits in the clone, or `AUTO_UPDATE="0"`) |
 | Want the normal desktop back | `./uninstall.sh` then `sudo reboot` |
 
 ## How it talks (if you want to change things)

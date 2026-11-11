@@ -10,6 +10,7 @@ Run `python3 server.py --simulate` to try the display without an Arduino.
 """
 import argparse
 import glob
+import hashlib
 import json
 import logging
 import math
@@ -23,6 +24,20 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 HERE = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.path.join(HERE, "web")
 log = logging.getLogger("bnts")
+
+
+def web_version():
+    """A short fingerprint of the display files, so an open page can notice when an update changed them."""
+    h = hashlib.sha1()
+    for root, _dirs, files in sorted(os.walk(WEB_DIR)):
+        for name in sorted(files):
+            p = os.path.join(root, name)
+            try:
+                st = os.stat(p)
+                h.update(f"{os.path.relpath(p, WEB_DIR)}:{st.st_size}:{st.st_mtime_ns}".encode())
+            except OSError:
+                pass
+    return h.hexdigest()[:10]
 
 
 class Hub:
@@ -253,6 +268,7 @@ def main():
                         format="%(asctime)s %(levelname)s %(message)s")
 
     hub = Hub()
+    hub.status["version"] = web_version()
     stop = threading.Event()
     if args.simulate:
         threading.Thread(target=simulate_loop, args=(hub, args.simulate, stop), daemon=True).start()

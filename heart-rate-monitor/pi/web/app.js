@@ -39,6 +39,7 @@
     session: { samples: [], startAt: 0, nextSampleAt: 0 }, summary: null, summaryUntil: 0,
     yMin: 480, yMax: 540,
     connected: false, receiving: false, simulated: false,
+    version: '', reloadPending: false,
     msgs: 0,
   };
 
@@ -49,6 +50,8 @@
       let m; try { m = JSON.parse(e.data); } catch (_) { return; }
       if (m.type === 'status') {
         S.connected = !!m.connected; S.receiving = !!m.receiving; S.simulated = !!m.simulated;
+        // An update changed the display files: reload, but only once nobody is using the screen.
+        if (m.version) { if (!S.version) S.version = m.version; else if (m.version !== S.version) S.reloadPending = true; }
       } else if (m.type === 'h') {
         onSample(m);
       }
@@ -399,6 +402,7 @@
     } else if (S.mode === 'summary' && now >= S.summaryUntil) {
       setMode('standby', now); S.validRun = 0;
     }
+    if (S.reloadPending && S.mode === 'standby' && now - S.modeAt > 2000) location.reload();
 
     const fading = now - S.modeAt < 800;
     if (S.mode === 'standby' || fading) drawStandby(now / 1000);

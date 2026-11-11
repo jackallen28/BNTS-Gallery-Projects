@@ -3,8 +3,8 @@
 set -uo pipefail
 [ "$(id -u)" -eq 0 ] && { echo "Run as your normal user, not root." >&2; exit 1; }
 
-sudo systemctl disable --now bnts-heart.service 2>/dev/null
-sudo rm -f /etc/systemd/system/bnts-heart.service
+sudo systemctl disable --now bnts-heart.service bnts-update.service 2>/dev/null
+sudo rm -f /etc/systemd/system/bnts-heart.service /etc/systemd/system/bnts-update.service
 sudo systemctl daemon-reload
 pkill -f /opt/bnts-heart/kiosk.sh 2>/dev/null
 sudo rm -rf /opt/bnts-heart /etc/default/bnts-heart

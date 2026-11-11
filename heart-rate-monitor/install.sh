@@ -26,7 +26,7 @@ say "Installing packages"
 sudo apt-get update
 CHROMIUM=chromium
 apt-cache show chromium >/dev/null 2>&1 || CHROMIUM=chromium-browser
-sudo apt-get install -y python3 python3-serial curl "$CHROMIUM"
+sudo apt-get install -y python3 python3-serial curl git "$CHROMIUM"
 sudo apt-get install -y wlr-randr >/dev/null 2>&1 || true     # only used for the optional ROTATE setting
 
 say "Installing the app to $APP"
@@ -35,6 +35,7 @@ sudo rm -rf "$APP/web"
 sudo cp -r "$HERE/pi/web" "$APP/web"
 sudo install -m 755 "$HERE/pi/server.py" "$APP/server.py"
 sudo install -m 755 "$HERE/pi/kiosk.sh"  "$APP/kiosk.sh"
+sudo install -m 755 "$HERE/pi/update.sh" "$APP/update.sh"
 if [ ! -f /etc/default/bnts-heart ]; then
   sudo tee /etc/default/bnts-heart >/dev/null <<'EOF'
 # BNTS heart rate settings (read by the server and the kiosk launcher)
@@ -44,8 +45,16 @@ BNTS_ARGS=""
 
 # Rotate the screen if it's mounted upside-down: 0, 90, 180 or 270. Empty = leave alone.
 ROTATE=""
+
+# Check GitHub for a new version at every boot and install it: 1 = yes, 0 = no.
+AUTO_UPDATE="1"
 EOF
 fi
+# set_conf KEY VALUE: add or replace KEY="VALUE" in the settings file
+set_conf() {
+  if sudo grep -q "^$1=" /etc/default/bnts-heart; then sudo sed -i "s|^$1=.*|$1=\"$2\"|" /etc/default/bnts-heart
+  else echo "$1=\"$2\"" | sudo tee -a /etc/default/bnts-heart >/dev/null; fi
+}
 
 say "Setting up the background service (reads the Arduino)"
 sudo usermod -aG dialout "$ME"
@@ -68,6 +77,35 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl enable bnts-heart.service
 sudo systemctl restart bnts-heart.service
+
+say "Setting up automatic updates at every boot"
+REPO_DIR="$(git -C "$HERE" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -n "$REPO_DIR" ]; then
+  set_conf REPO_DIR "$REPO_DIR"
+  set_conf REPO_USER "$ME"
+  set_conf APP_SUBDIR "$(realpath --relative-to="$REPO_DIR" "$HERE")"
+  sudo grep -q '^AUTO_UPDATE=' /etc/default/bnts-heart || set_conf AUTO_UPDATE 1
+  git -C "$REPO_DIR" rev-parse HEAD | sudo tee "$APP/.deployed-rev" >/dev/null
+  sudo tee /etc/systemd/system/bnts-update.service >/dev/null <<EOF
+[Unit]
+Description=BNTS heart rate: install the latest version from GitHub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$APP/update.sh
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  sudo systemctl daemon-reload
+  sudo systemctl enable bnts-update.service
+  echo "   At every boot the Pi will pull $REPO_DIR from GitHub and install anything new."
+else
+  warn "This folder isn't a git clone, so automatic updates are off. Clone the repo with git to turn them on."
+fi
 
 say "Making the screen show ONLY the heart rate display"
 # 1. Boot straight into the desktop session as this user (Raspberry Pi Connect screen sharing needs a live
@@ -128,6 +166,7 @@ Next:  sudo reboot
 
 After the reboot the Pi logs in by itself, and the touchscreen shows only the heart rate display.
 Check the service any time with:   systemctl status bnts-heart
+See what the last update did:      journalctl -u bnts-update -b
 If the screen isn't right:         cat /tmp/bnts-kiosk.log
 Raspberry Pi Connect:              see the 'Raspberry Pi Connect' section of README.md
 EOF

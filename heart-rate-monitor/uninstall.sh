@@ -8,6 +8,7 @@ sudo rm -f /etc/systemd/system/bnts-heart.service /etc/systemd/system/bnts-updat
 sudo systemctl daemon-reload
 pkill -f /opt/bnts-heart/kiosk.sh 2>/dev/null
 sudo rm -rf /opt/bnts-heart /etc/default/bnts-heart
+sudo rm -f /usr/local/bin/bnts-monitor
 sudo rm -f /etc/lightdm/lightdm.conf.d/50-bnts-autologin.conf
 
 CFG="$HOME/.config/labwc"

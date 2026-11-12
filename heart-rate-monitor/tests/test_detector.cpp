@@ -7,6 +7,7 @@
 #include <algorithm>
 #include "../arduino/bnts_heartrate/HeartDetector.h"
 #include "../arduino/bnts_heartrate/StagedDetector.h"
+#include "../arduino/bnts_heartrate/StatusLed.h"
 
 static double gauss(double x, double mu, double sd) { double d = (x - mu) / sd; return std::exp(-d * d); }
 
@@ -115,10 +116,10 @@ int main() {
   printf("10. finger on at 72 BPM: confirmed after ~3 s with the reading ready at once\n");
   { Trace tr = simulate({{2, 30, 1, 72, 250}}, 30);
     double confirmAfter = (tr.liveAtMs - 2000) / 1000.0;
-    CHECK(confirmAfter >= 2.9 && confirmAfter <= 4.8, "first reading %.1f s after the finger arrived (expect 3-4.8)", confirmAfter);
+    CHECK(confirmAfter >= 2.0 && confirmAfter <= 3.4, "first reading %.1f s after the finger arrived (expect 2-3.4: the 4th steady beat)", confirmAfter);
     CHECK(std::abs(tr.bpmAt[tr.liveAtMs] - 72) <= 2, "first reading = %d BPM (expect 72 +-2)", tr.bpmAt[tr.liveAtMs]);
     CHECK(std::abs(tr.bpmAt[29000] - 72) <= 2, "still %d BPM after 28 s", tr.bpmAt[29000]);
-    CHECK(tr.beats >= 30 && tr.beats <= 36, "beat flags = %d in 28 s (expect ~34; chatter must not double count)", tr.beats);
+    CHECK(tr.beats >= 30 && tr.beats <= 36, "beat flags = %d in 28 s (expect ~33; chatter must not double count)", tr.beats);
     bool spaced = true; for (size_t i = 1; i < tr.updateTimes.size(); i++) if (tr.updateTimes[i] - tr.updateTimes[i - 1] < 2990) spaced = false;
     CHECK(spaced && tr.updateTimes.size() >= 8, "%d updates, never closer than 3 s apart", (int)tr.updateTimes.size()); }
 
@@ -168,6 +169,67 @@ int main() {
     CHECK(peak > 590 && peakAt > 80 && peakAt < 160, "pulse peaks at %d, %u ms after the beat (expect >590, 80-160 ms)", peak, peakAt);
     CHECK(late == 512, "back to baseline (512) between beats: %d", late);
     SD idle; CHECK(idle.syntheticSignal(5000) == 512 && idle.amplitude == 0, "flat line and amplitude 0 when idle"); }
+
+  printf("19. interactive verification: real beats and progress reported from the start of a rhythm\n");
+  {
+    SD det; std::vector<std::pair<uint32_t,int>> flagged;   // (time, progress) of each beat flag
+    uint32_t t1 = 0, t2 = 0, firstBeatMs = 0; int stageSeen = 0; bool progressMonotone = true; int lastP = 0;
+    int beatsBeforeStage1 = 0, beatsInLive = 0;
+    for (uint32_t t = 0; t < 8000; t++) {
+      int pin = 0;
+      if (t >= 1000) {                                        // 72 BPM pulses with edge chatter from t = 1 s
+        uint32_t ph = (t - 1000) % 833;
+        auto ch = [&](uint32_t d, int hi) { return ((d / 5) % 2 == 0) ? hi : !hi; };
+        if (ph < 15) pin = ch(ph, 1); else if (ph < 250) pin = 1; else if (ph < 265) pin = ch(ph - 250, 0);
+      }
+      det.update(pin, t);
+      if (det.stage >= 1 && t1 == 0) t1 = t;
+      if (det.stage == 2 && t2 == 0) t2 = t;
+      if (det.stage > stageSeen) stageSeen = det.stage;
+      if (det.progress < lastP && det.stage >= 1) progressMonotone = false;
+      lastP = det.progress;
+      if (det.takeBeat()) {
+        flagged.push_back({t, det.progress});
+        if (det.stage == 0) beatsBeforeStage1++;
+        if (det.stage == 2) beatsInLive++;
+      }
+    }
+    CHECK(t1 >= 2000 && t1 <= 3300, "'finger detected' (stage 1) %.1f s after the finger landed (expect 1-2.3 s)", (t1 - 1000) / 1000.0);
+    CHECK(t2 > t1 && (t2 - 1000) <= 3300, "'verified' (stage 2) %.1f s after the finger landed, after stage 1", (t2 - 1000) / 1000.0);
+    CHECK(flagged.size() >= 7 && flagged.size() <= 10, "%d beat flags in 7 s (every real beat from the 2nd one: expect about 8)", (int)flagged.size());
+    CHECK(beatsInLive >= 4, "beats keep being flagged once live (%d)", beatsInLive);
+    CHECK(progressMonotone && det.progress == 4, "progress only goes up and ends full (4): ends at %d", det.progress);
+    bool reaches4 = false; for (auto& f : flagged) if (f.second == 4) reaches4 = true;
+    CHECK(reaches4, "progress 4 is reached on a real beat (the 4th steady beat)");
+  }
+
+  printf("20. a one-off noise blip never shows 'detected' and never flags a beat\n");
+  { SD det; int flags = 0, maxStage = 0;
+    for (uint32_t t = 0; t < 6000; t++) { det.update((t >= 2000 && t < 2150), t); if (det.takeBeat()) flags++; if (det.stage > maxStage) maxStage = det.stage; }
+    CHECK(maxStage == 0 && flags == 0, "stage stayed 0 and no beat was flagged (stage %d, flags %d)", maxStage, flags); }
+
+  printf("\n--- LED (pin 13) blink pattern ---\n");
+  printf("18. off with no finger, flashing 0.5 s on / 0.5 s off while a finger is detected\n");
+  {
+    bnts::StatusLed led; bool ok = true; int mism = 0;
+    for (uint32_t t = 0; t < 5000; t++) if (led.update(false, t)) ok = false;
+    CHECK(ok, "stays off for 5 s with no finger");
+    // finger detected from t = 7123 ms
+    uint32_t f0 = 7123; int edges = 0; bool prev = led.update(true, f0);
+    CHECK(prev, "turns ON the moment the finger is detected");
+    for (uint32_t t = f0; t < f0 + 4000; t++) {
+      bool on = led.update(true, t);
+      bool expect = ((t - f0) / 500) % 2 == 0;
+      if (on != expect) mism++;
+      if (on != prev) edges++;
+      prev = on;
+    }
+    CHECK(mism == 0, "on for 0-500 ms, off for 500-1000 ms, on again... (mismatches: %d)", mism);
+    CHECK(edges == 7, "7 changes in 4 s (on,off,on,off,on,off,on,off): %d", edges);
+    CHECK(!led.update(false, f0 + 4001), "turns OFF as soon as the finger is gone");
+    bool back = led.update(true, f0 + 9000);
+    CHECK(back, "when the finger is back the blink starts again with ON");
+  }
 
   printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "ALL PASSED", failures, failures == 1 ? "" : "s");
   return failures ? 1 : 0;

@@ -36,6 +36,8 @@ sudo cp -r "$HERE/pi/web" "$APP/web"
 sudo install -m 755 "$HERE/pi/server.py" "$APP/server.py"
 sudo install -m 755 "$HERE/pi/kiosk.sh"  "$APP/kiosk.sh"
 sudo install -m 755 "$HERE/pi/update.sh" "$APP/update.sh"
+sudo install -m 755 "$HERE/pi/serial-monitor.sh" "$APP/serial-monitor.sh"
+sudo ln -sf "$APP/serial-monitor.sh" /usr/local/bin/bnts-monitor     # the "Serial Monitor over SSH" command
 if [ ! -f /etc/default/bnts-heart ]; then
   sudo tee /etc/default/bnts-heart >/dev/null <<'EOF'
 # BNTS heart rate settings (read by the server and the kiosk launcher)
@@ -198,6 +200,7 @@ Next:  sudo reboot
 After the reboot the Pi logs in by itself, and the touchscreen shows only the heart rate display.
 Check the service any time with:   systemctl status bnts-heart
 See what the last update did:      journalctl -u bnts-update -b
+Watch the Arduino's serial output:  bnts-monitor
 If the screen isn't right:         cat /tmp/bnts-kiosk.log
 Raspberry Pi Connect:              see the 'Raspberry Pi Connect' section of README.md
 EOF

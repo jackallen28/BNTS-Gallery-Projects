@@ -23,6 +23,7 @@ main() {
   local APP_SUBDIR="${APP_SUBDIR:-heart-rate-monitor}"
   local TRIES="${BNTS_ONLINE_TRIES:-6}"
   local SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+  local BIN_DIR="${BNTS_BIN_DIR:-/usr/local/bin}"
 
   log() { echo "[bnts-update] $*"; }
 
@@ -70,10 +71,11 @@ main() {
     || { log "couldn't copy the display files - leaving things as they were"; return 0; }
   # Copy to a temporary name then rename, so replacing files that are in use (including this script) is safe.
   local f
-  for f in server.py kiosk.sh update.sh; do
+  for f in server.py kiosk.sh update.sh serial-monitor.sh; do
     [ -f "$SRC/pi/$f" ] || continue
     install -m 755 "$SRC/pi/$f" "$APP/$f.new" && mv -f "$APP/$f.new" "$APP/$f"
   done
+  [ -f "$APP/serial-monitor.sh" ] && ln -sf "$APP/serial-monitor.sh" "$BIN_DIR/bnts-monitor" 2>/dev/null
   echo "$NEW" > "$APP/.deployed-rev"
   $SYSTEMCTL restart bnts-heart.service || log "couldn't restart bnts-heart.service"
   log "done - the display reloads itself when it is next idle"

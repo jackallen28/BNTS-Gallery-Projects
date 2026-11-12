@@ -16,13 +16,21 @@
 
   Output : USB serial, 115200 baud, 50 lines per second:
 
-      H,<signal>,<bpm>,<beat>,<amplitude>
+      H,<signal>,<bpm>,<beat>,<amplitude>,<stage>,<progress>
 
       signal     the pulse waveform 0..1023 (this is the live graph)
       bpm        beats per minute, or 0 when there is no reading yet / no finger
       beat       1 on the line where a heartbeat was just detected, else 0
       amplitude  analog: size of the pulse wave (~0-10 = nothing on the sensor)
                  digital: 0 = nothing heard, 100 = beats are being heard
+      stage      0 = no finger, 1 = finger detected (steady beats for 1 s, now verifying),
+                 2 = real heart rate verified (bpm is available). The display uses this to say "Finger detected".
+      progress   steady beats counted so far while verifying (0-4); the display lights one pixel per beat
+      beat       (also sent for each real beat while verifying, so the display responds from the first beats)
+
+  LED (pin 13, the little LED on the board): OFF = no finger detected, FLASHING (0.5 s on, 0.5 s off) = finger
+  detected (steady beats for 1 s; the Pi shows "Finger detected" at the same moment). If it flashes but the Pi shows standby, the problem is between the Arduino
+  and the Pi (run ./check-arduino.sh on the Pi). If it never flashes, the Arduino isn't detecting the finger.
 
   Lines starting with '#' are human-readable status messages (the Raspberry Pi ignores them), e.g.
       # [ 12 s] Finger confirmed. READING: 72 BPM
@@ -34,6 +42,7 @@
 
 #include "HeartDetector.h"
 #include "StagedDetector.h"
+#include "StatusLed.h"
 
 #define SENSOR_MODE_DIGITAL 1     // 1 = switch on D (digital),  0 = switch on A (analog)
 #define STATUS_MESSAGES     1     // 1 = print "# ..." status lines (digital mode)
@@ -52,6 +61,7 @@ const uint8_t  SEND_EVERY_N = 4;     // -> 50 lines/s to the Pi
 bnts::HeartDetector detector;
 #endif
 
+bnts::StatusLed statusLed;
 uint32_t nextSampleUs;
 uint8_t  sampleCount = 0;
 bool     beatLatch = false;
@@ -96,6 +106,8 @@ void printStatusMessages() {
 void setup() {
   Serial.begin(BAUD);
   pinMode(SENSOR_PIN, INPUT);
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
 #if SENSOR_MODE_DIGITAL
   Serial.println(F("# BNTS heart rate v2 (digital sensor mode, pin D2)"));
 #else
@@ -119,6 +131,7 @@ void loop() {
   detector.update(analogRead(SENSOR_PIN), millis());
 #endif
   if (detector.takeBeat()) beatLatch = true;  // hold until the next line goes out
+  digitalWrite(LED_BUILTIN, statusLed.update(detector.stage >= 1, millis()) ? HIGH : LOW);   // flash while a finger is detected
 
   if (++sampleCount >= SEND_EVERY_N) {
     sampleCount = 0;
@@ -134,7 +147,11 @@ void loop() {
     Serial.print(',');
     Serial.print(beatLatch ? 1 : 0);
     Serial.print(',');
-    Serial.println(detector.amplitude);
+    Serial.print(detector.amplitude);
+    Serial.print(',');
+    Serial.print(detector.stage);
+    Serial.print(',');
+    Serial.println(detector.progress);
     beatLatch = false;
   }
 }

@@ -25,11 +25,13 @@ REPO_USER=""
 APP_SUBDIR="heart-rate-monitor"
 AUTO_UPDATE="1"
 EOF
-run() { BNTS_CONF="$W/conf" BNTS_APP_DIR="$W/app" SYSTEMCTL="$W/bin/systemctl" BNTS_ONLINE_TRIES=1 bash "$HERE/pi/update.sh" 2>&1; }
+mkdir -p "$W/usrbin"
+run() { BNTS_CONF="$W/conf" BNTS_APP_DIR="$W/app" BNTS_BIN_DIR="$W/usrbin" SYSTEMCTL="$W/bin/systemctl" BNTS_ONLINE_TRIES=1 bash "$HERE/pi/update.sh" 2>&1; }
 
 echo "1. first run: nothing deployed yet -> installs the files and restarts the server"
 out=$(run); echo "$out" | sed 's/^/      /'
-check "web, server.py, kiosk.sh and update.sh installed" '[ -f app/web/index.html ] && [ -x app/server.py ] && [ -x app/kiosk.sh ] && [ -x app/update.sh ]'
+check "web, server.py, kiosk.sh, update.sh and serial-monitor.sh installed" '[ -f app/web/index.html ] && [ -x app/server.py ] && [ -x app/kiosk.sh ] && [ -x app/update.sh ] && [ -x app/serial-monitor.sh ]'
+check "bnts-monitor command linked" '[ -L usrbin/bnts-monitor ]'
 check "deployed revision recorded" '[ "$(cat app/.deployed-rev)" = "$(git -C piclone rev-parse HEAD)" ]'
 check "bnts-heart restarted once" '[ "$(grep -c "restart bnts-heart" systemctl.log)" = 1 ]'
 

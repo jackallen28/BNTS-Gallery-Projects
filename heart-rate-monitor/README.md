@@ -1,13 +1,16 @@
 # BNTS Heart Rate
 
 An Arduino reads a pulse sensor and sends the heart beats over USB to a Raspberry Pi. The Pi's touchscreen
-shows three screens, all in the BNTS colours:
+shows four screens, all in the BNTS colours:
 
 1. **Standby** - beating pixel heart, rippling pixel grid and a sweeping ECG line, with one prompt:
    *"Check your heart rate - Touch the sensor and hold"*.
-2. **Live** - after a finger has given steady beats for 3 seconds, the **BPM number** (ready straight away,
-   then refreshed every 3 seconds) and a **scrolling pulse graph**.
-3. **Results** - when the finger comes off, the screen waits 3 seconds (in case it was just being adjusted),
+2. **Finger detected** - after about a second of steady beats the screen says *"Finger detected - Keep holding"*. The heart
+   beats with **every real beat** and a row of four pixels lights up, one for each steady beat counted, so the student can see
+   it working and how close it is. (If they lift off too early, standby reminds them to hold on a little longer.)
+3. **Live** - on the fourth steady beat the heart rate is **verified**: the **BPM number** appears (about 2.5-3 seconds after
+   the finger landed), tagged *"Heart rate verified"*, with a **scrolling pulse graph**. The number then refreshes every 3 seconds.
+4. **Results** - when the finger comes off, the screen waits 3 seconds (in case it was just being adjusted),
    then shows **5 seconds of results**: average, lowest and highest BPM, the time measured, and a chart of the
    readings. Then it returns to standby.
 
@@ -29,6 +32,7 @@ finger → [Heart rate sensor] → Arduino (D2) ──USB──► Raspberry Pi 
 | `pi/web/` | The display itself (HTML/CSS/JS, BNTS pixel mark) |
 | `pi/kiosk.sh` | Launches the display full-screen and keeps it running |
 | `pi/update.sh` | Boot-time updater: pulls the latest code from GitHub and installs it |
+| `pi/serial-monitor.sh` | The `bnts-monitor` command: the Arduino's serial output over SSH |
 | `install.sh` | One-shot Pi setup (service, kiosk, autologin, auto-start) |
 | `check-arduino.sh` | Checks the Arduino is connected and sending data the display understands |
 | `flash-arduino.sh` | Flash the Arduino **from the Pi** (the Pi can do this) |
@@ -64,13 +68,19 @@ The sensor has a small switch for its output mode, and the firmware must match i
 
 Change it, then flash again (step 2).
 
-**How digital mode measures** (`arduino/bnts_heartrate/StagedDetector.h`): a finger only counts after about 3 seconds
-of steady, regular beats, and the beats are already being averaged during that time, so the first reading is ready
-the moment the finger is confirmed. The reading then refreshes every 3 seconds, averaging the last 6 seconds of beats.
-A reading more than 15 BPM away from the current one is held back and cross-checked against the next one (which is
-measured from fresh beats): if the next one agrees with the old value the odd one is dropped, and if it agrees with
-the odd one the change is accepted. If no beat arrives for 3 seconds the finger is treated as removed. Open the
-Serial Monitor (115200 baud) to watch it explain itself in `# ...` lines.
+**How digital mode measures** (`arduino/bnts_heartrate/StagedDetector.h`):
+- **Finger detected (stage 1):** steady, regular beats for 1 second. One-off blips and irregular beats never get this far.
+  From here every real beat is passed to the display, with a count of the steady beats so far (`progress`).
+- **Heart rate verified (stage 2):** on the 4th steady beat (3 good gaps between beats), as long as the rhythm has lasted
+  1.5 s. That is as fast as is accurate: fewer gaps and the first number drifts by several BPM. In testing with the gaps
+  between beats varying by +-8% (typical at rest), 95% of first readings were within 0.5 BPM of the beats they were measured
+  from, verified a median of 2.0 s after the first beat (`tests/accuracy_staged.cpp`).
+- **Live:** the reading then refreshes every 3 seconds, averaging the last 6 seconds of beats. A reading more than 15 BPM
+  from the current one is held back and cross-checked against the next one (measured from fresh beats): if the next one agrees
+  with the old value the odd one is dropped, and if it agrees with the odd one the change is accepted.
+- If no beat arrives for 3 seconds the finger is treated as removed.
+
+Open the Serial Monitor (115200 baud), or run `bnts-monitor` on the Pi, to watch it explain itself in `# ...` lines.
 
 ### Test the sensor first (optional, from a Mac/PC)
 
@@ -219,6 +229,25 @@ installed keeps running.
   Undo your edits with `git -C ~/BNTS-Gallery-Projects checkout -- .` or put your settings in `/etc/default/bnts-heart` instead.
 - A change to `install.sh` itself (new packages, new services) needs `./install.sh` run again; the log tells you.
 
+## Watch the Arduino's serial output from an SSH session (Serial Monitor)
+
+```bash
+bnts-monitor
+```
+
+Shows what the Arduino is sending, like the Arduino IDE's Serial Monitor, without stopping the display: the display service
+already has the Arduino's serial port open, so the command asks it for a copy of what it receives. Press Ctrl+C to quit.
+
+| Command | Shows |
+|---|---|
+| `bnts-monitor` | the Arduino's `# ...` status messages, plus one decoded data line per second (bpm, stage, progress) |
+| `bnts-monitor --all` | every line exactly as sent (about 50 data lines a second) |
+| `bnts-monitor --data` | only the decoded data lines, once a second |
+
+If a test sketch is loaded on the Arduino you'll see its text here too, which makes it easy to tell what is on the board.
+If the display service isn't running, `bnts-monitor` reads the Arduino's port directly instead. `install.sh` sets up the command
+(`/usr/local/bin/bnts-monitor`); until you've run it, use `./pi/serial-monitor.sh`.
+
 ## Is the Arduino sending data to the Pi?
 
 ```bash
@@ -232,6 +261,12 @@ paused for about 6 seconds while it listens):
 ```bash
 ./check-arduino.sh --raw
 ```
+
+**The Arduino's own LED tells you what it sees.** The little LED on the board (pin 13) is off when no finger is detected
+and flashes (0.5 s on, 0.5 s off) while a finger is detected (steady beats for 1 second, the same moment the Pi says
+"Finger detected"). If it flashes but the Pi shows
+standby, the Arduino is fine and the problem is between the Arduino and the Pi: run `./check-arduino.sh`. If it never
+flashes, the Arduino isn't detecting the finger: check the sensor wiring, that the signal is on **D2**, and the A/D switch.
 
 A healthy Arduino sends about 50 lines a second that start with `H,`. `./flash-arduino.sh` runs the same check for you
 after it uploads and prints OK or a warning.
@@ -253,11 +288,13 @@ after it uploads and prints OK or a warning.
 
 ## How it talks (if you want to change things)
 
-The Arduino sends 50 lines/second at 115200 baud: `H,<signal>,<bpm>,<beat>,<amplitude>`.
-(In digital mode `signal` is the drawn pulse shape and `amplitude` is 100 once beats are heard.)
+The Arduino sends 50 lines/second at 115200 baud: `H,<signal>,<bpm>,<beat>,<amplitude>,<stage>,<progress>`.
+(In digital mode `signal` is the drawn pulse shape and `amplitude` is 100 once beats are heard. `stage` is 0 = no finger,
+1 = finger detected, 2 = heart rate verified; `progress` is the number of steady beats counted so far, 0-4. `beat` is 1 on
+every real beat from the second steady beat. Older firmware sends only the first five fields and the page copes.)
 `server.py` forwards them to the page as JSON over Server-Sent Events at `/events`.
-The page switches to LIVE when the Arduino reports a BPM (it has already confirmed the finger). It records a reading every
-3 seconds. When the Arduino stops reporting a BPM (3 s without a beat) the page shows the results for 5 seconds,
+The page shows the finger-detected screen while `stage` is 1, switches to LIVE when the Arduino reports a BPM (it has already
+verified the heart rate), and records a reading every 3 seconds. When the Arduino stops reporting a BPM (3 s without a beat) the page shows the results for 5 seconds,
 then returns to standby. A new finger during the results goes straight to LIVE.
 
 *For fun only. Not a medical device.*

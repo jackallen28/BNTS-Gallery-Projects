@@ -4,7 +4,9 @@
 Reads lines from the Arduino over USB serial, and serves the display page plus a
 live Server-Sent-Events stream (/events) to the browser.
 
-Arduino line format:   H,<signal>,<bpm>,<beat>,<amplitude>
+Arduino line format:   H,<signal>,<bpm>,<beat>,<amplitude>[,<stage>[,<progress>]]
+  (stage 0 = no finger, 1 = finger detected, 2 = heart rate verified; progress = steady beats counted so far;
+   older firmware omits stage and progress)
 
 Run `python3 server.py --simulate` to try the display without an Arduino.
 """
@@ -46,6 +48,7 @@ class Hub:
     def __init__(self):
         self._lock = threading.Lock()
         self._clients = set()
+        self._raw_clients = set()
         self.status = {"type": "status", "connected": False, "receiving": False, "wrong_program": False,
                        "other_line": "", "port": None, "simulated": False}
         self.last_data = 0.0
@@ -64,6 +67,28 @@ class Hub:
         with self._lock:
             self._clients.discard(q)
 
+    # --- raw serial lines, for `bnts-monitor` (a Serial Monitor over SSH) ---
+    def raw_subscribe(self):
+        q = queue.Queue(maxsize=2000)
+        with self._lock:
+            self._raw_clients.add(q)
+        return q
+
+    def raw_unsubscribe(self, q):
+        with self._lock:
+            self._raw_clients.discard(q)
+
+    def raw(self, text):
+        """Pass one line the Arduino sent to anyone watching with bnts-monitor."""
+        if not self._raw_clients:
+            return
+        with self._lock:
+            for q in list(self._raw_clients):
+                try:
+                    q.put_nowait(text)
+                except queue.Full:
+                    pass
+
     def publish(self, msg):
         data = json.dumps(msg, separators=(",", ":"))
         with self._lock:
@@ -73,9 +98,14 @@ class Hub:
                 except queue.Full:  # a stuck browser must never block the serial thread
                     pass
 
-    def data(self, sig, bpm, beat, amp):
+    def data(self, sig, bpm, beat, amp, stage=None, progress=None):
         self.last_data = time.monotonic()
-        self.publish({"type": "h", "s": sig, "b": bpm, "x": beat, "a": amp})
+        msg = {"type": "h", "s": sig, "b": bpm, "x": beat, "a": amp}
+        if stage is not None:
+            msg["g"] = stage
+        if progress is not None:
+            msg["p"] = progress
+        self.publish(msg)
 
     def other_line(self, text):
         """The Arduino sent something that is not an 'H,...' data line (usually a test sketch is loaded)."""
@@ -103,7 +133,7 @@ def find_port(wanted):
 
 
 def parse_line(raw):
-    """b'H,512,72,1,80\\r\\n' -> (512, 72, 1, 80); anything else -> None."""
+    """b'H,512,72,1,80,2,4\\r\\n' -> (512, 72, 1, 80, 2, 4); stage and progress are optional (None); anything else -> None."""
     try:
         text = raw.decode("ascii", "ignore").strip()
     except Exception:
@@ -111,15 +141,21 @@ def parse_line(raw):
     if not text.startswith("H,"):
         return None
     parts = text.split(",")
-    if len(parts) != 5:
+    if len(parts) not in (5, 6, 7):
         return None
     try:
-        sig, bpm, beat, amp = (int(p) for p in parts[1:])
+        sig, bpm, beat, amp = (int(p) for p in parts[1:5])
+        stage = int(parts[5]) if len(parts) >= 6 else None
+        progress = int(parts[6]) if len(parts) == 7 else None
     except ValueError:
         return None
     if not (0 <= sig <= 1023 and 0 <= bpm <= 300 and beat in (0, 1)):
         return None
-    return sig, bpm, beat, amp
+    if stage is not None and stage not in (0, 1, 2):
+        return None
+    if progress is not None and not (0 <= progress <= 20):
+        return None
+    return sig, bpm, beat, amp, stage, progress
 
 
 def serial_loop(hub, port_arg, baud, stop):
@@ -142,13 +178,14 @@ def serial_loop(hub, port_arg, baud, stop):
                     line = ser.readline()
                     if not line:
                         continue
+                    text = line.decode("ascii", "replace").strip()
+                    if text:
+                        hub.raw(text)
                     parsed = parse_line(line)
                     if parsed:
                         hub.data(*parsed)
-                    else:
-                        text = line.decode("ascii", "replace").strip()
-                        if text and not text.startswith("#"):     # '# ...' lines are our own status messages
-                            hub.other_line(text)
+                    elif text and not text.startswith("#"):     # '# ...' lines are our own status messages
+                        hub.other_line(text)
         except (serial.SerialException, OSError) as e:
             log.warning("Serial problem (%s) — retrying", e)
         hub.set_status(connected=False, receiving=False, port=None)
@@ -171,15 +208,17 @@ def _g(x, mu, sd):
 
 
 def simulate_loop(hub, mode, stop):
-    """Fake Arduino that behaves like the real firmware: a finger is confirmed after ~3 s, the first
-    reading is ready at that moment, then the reading only changes every 3 s."""
+    """Fake Arduino that behaves like the real firmware: from a steady rhythm of 1 s the finger is "detected", every real
+    beat is passed on with a progress count, the heart rate is verified on the 4th steady beat (first reading ready at
+    that moment), then the reading only changes every 3 s."""
     hub.set_status(connected=True, receiving=True, port="simulator", simulated=True)
     t0 = time.monotonic()
-    phase = 0.0
+    phase = random.random()
     bpm_f = 72.0
     published = 0
     next_publish = 0.0
-    finger_since = 0.0
+    first_beat_t = None
+    beats_since_on = 0
     last_beat_t = 0.0
     was_on = False
     while not stop.is_set():
@@ -188,38 +227,56 @@ def simulate_loop(hub, mode, stop):
             finger = True
         elif mode == "off":
             finger = False
+        elif mode == "brief":  # a finger for 2 s, then lifted too early: 8 s off
+            finger = 3 < (t % 10) < 5
         else:  # cycle: 8 s idle, 30 s finger
             finger = (t % 38) > 8
         if finger and not was_on:
-            finger_since = t
+            first_beat_t = None
+            beats_since_on = 0
             published = 0
             bpm_f = random.choice([62, 71, 78, 88, 104])
         was_on = finger
         beat = 0
+        stage = 0
+        progress = 0
         if finger:
             bpm_f += random.uniform(-0.15, 0.15) + (72 - bpm_f) * 0.0005
             phase += bpm_f / 60.0 * 0.02
+            real_beat = False
             if phase >= 1:
                 phase -= 1
-                beat = 1
+                real_beat = True
+                beats_since_on += 1
                 last_beat_t = t
+                if first_beat_t is None:
+                    first_beat_t = t
             sig = 512 + 90 * (_g(phase, 0.18, 0.08) + 0.35 * _g(phase, 0.5, 0.09)) + random.uniform(-3, 3)
-            if published == 0 and t - finger_since >= 3.0:       # finger confirmed: first reading ready
+            span = (t - first_beat_t) if first_beat_t is not None else 0.0
+            if published == 0 and beats_since_on >= 4 and span >= 1.5:     # 4 steady beats: verified, first reading ready
                 published = int(round(bpm_f))
                 next_publish = t + 3.0
-            elif published and t >= next_publish:                # then a new reading every 3 s
+            elif published and t >= next_publish:                          # then a new reading every 3 s
                 published = int(round(bpm_f))
                 next_publish = t + 3.0
             amp = 100
-            if not published:
-                beat = 0
-        elif published and t - last_beat_t < 3.0:               # finger just left: reading is held for 3 s
-            sig, amp = 512, 100
+            if published:
+                stage, progress = 2, 4
+                beat = 1 if real_beat else 0
+            else:
+                if beats_since_on >= 2 and span >= 1.0:                    # steady for 1 s: "finger detected"
+                    stage = 1
+                    progress = min(beats_since_on, 4)
+                if beats_since_on >= 2 and real_beat:
+                    beat = 1                                               # real beats are passed on from the 2nd beat
+        elif published and t - last_beat_t < 3.0:                          # finger just left: reading is held for 3 s
+            sig, amp, stage, progress = 512, 100, 2, 4
         else:
             published = 0
             sig = 505 + random.uniform(-4, 4)
             amp = 0
-        hub.data(int(sig), published, beat, amp)
+        hub.data(int(sig), published, beat, amp, stage, progress)
+        hub.raw(f"H,{int(sig)},{published},{beat},{amp},{stage},{progress}")
         stop.wait(0.02)
 
 
@@ -240,6 +297,8 @@ def make_handler(hub):
             path = self.path.split("?")[0]
             if path == "/events":
                 return self.stream()
+            if path == "/serial":
+                return self.serial_stream()
             if path == "/api/status":
                 body = json.dumps(hub.status).encode()
                 self.send_response(200)
@@ -249,6 +308,25 @@ def make_handler(hub):
                 self.wfile.write(body)
                 return
             return super().do_GET()
+
+        def serial_stream(self):
+            """Plain-text copy of every line the Arduino sends (used by bnts-monitor). Local to the Pi unless --host is changed."""
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            q = hub.raw_subscribe()
+            try:
+                while True:
+                    try:
+                        self.wfile.write(q.get(timeout=15).encode("utf-8", "replace") + b"\n")
+                    except queue.Empty:
+                        self.wfile.write(b"# (nothing received from the Arduino in the last 15 s - still listening)\n")
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            finally:
+                hub.raw_unsubscribe(q)
 
         def stream(self):
             self.send_response(200)
@@ -279,7 +357,7 @@ def main():
     ap.add_argument("--host", default="127.0.0.1",
                     help="address to serve on; use 0.0.0.0 to open the display from another device")
     ap.add_argument("--http-port", type=int, default=8080)
-    ap.add_argument("--simulate", nargs="?", const="cycle", choices=["cycle", "on", "off"],
+    ap.add_argument("--simulate", nargs="?", const="cycle", choices=["cycle", "on", "off", "brief"],
                     help="fake sensor data instead of reading the Arduino")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()

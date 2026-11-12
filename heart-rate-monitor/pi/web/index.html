@@ -18,6 +18,16 @@
       </div>
     </section>
 
+    <!-- DETECT: a finger has been steady for 1 s; the heart rate is being verified. Responds to every real beat. -->
+    <section id="detect" class="screen">
+      <canvas id="cv-detect"></canvas>
+      <div id="detect-text">
+        <h1 id="detect-title">Finger detected</h1>
+        <p id="detect-sub">Keep holding</p>
+      </div>
+      <div id="pips"><i></i><i></i><i></i><i></i></div>
+    </section>
+
     <!-- LIVE: BPM number + scrolling pulse graph -->
     <section id="live" class="screen">
       <div class="eyebrow">Live heart rate</div>
@@ -26,6 +36,7 @@
         <canvas id="cv-heart"></canvas>
         <div id="bpm-num">--</div>
         <div id="bpm-unit">BPM</div>
+        <div id="verified">✓ Heart rate verified</div>
       </div>
 
       <div id="wave-panel" class="panel">

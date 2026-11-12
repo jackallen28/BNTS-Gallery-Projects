@@ -42,7 +42,8 @@ PY
 echo "Building the firmware for an Uno (-Os)..."
 OUT_ELF="$W/fw.elf" bash "$HERE/tests/compile_uno.sh" "$W/fw"
 echo "Running it in QEMU (about 30-60 s)..."
-timeout 150 qemu-system-avr -M uno -bios "$W/fw.elf" -display none -serial stdio 2>/dev/null | tr -d '\r' | grep -a '^#' > "$W/out.txt" || true
+timeout 150 qemu-system-avr -M uno -bios "$W/fw.elf" -display none -serial stdio 2>/dev/null | tr -d '\r' > "$W/all.txt" || true
+grep -a '^#' "$W/all.txt" > "$W/out.txt" || true
 cat "$W/out.txt" | sed 's/^/    /'
 fails=0
 check() { if grep -aq -- "$2" "$W/out.txt"; then echo "  ok:   $1"; else echo "  FAIL: $1"; fails=$((fails+1)); fi; }
@@ -50,5 +51,13 @@ check "finger detected"                       "Something detected"
 check "finger confirmed with a 72 BPM reading" "Finger confirmed. READING: 72 BPM"
 check "glitch skipped, then dropped"           "was a glitch - ignored"
 check "finger removal noticed"                 "Finger removed"
+checkh() { if grep -aq -- "$2" "$W/all.txt"; then echo "  ok:   $1"; else echo "  FAIL: $1"; fails=$((fails+1)); fi; }
+checkh "stage 1 (finger detected) sent before any reading" '^H,[0-9]*,0,[01],100,1,[0-9]*$'
+checkh "real beats flagged while verifying"                '^H,[0-9]*,0,1,100,1,[0-9]*$'
+checkh "progress reaches 4 on the way to verified"         '^H,[0-9]*,[0-9]*,[01],100,[12],4$'
+checkh "stage 2 (verified) sent with the reading"          '^H,[0-9]*,72,[01],100,2,4$'
+checkh "all lines well formed (7 fields)"                  '^H,[0-9]*,[0-9]*,[01],[0-9]*,[012],[0-4]$'
+bad=$(grep -a '^H,' "$W/all.txt" | head -n -1 | grep -avc '^H,[0-9]*,[0-9]*,[01],[0-9]*,[012],[0-4]$' || true)
+if [ "${bad:-0}" = 0 ]; then echo "  ok:   no malformed data lines"; else echo "  FAIL: $bad malformed data lines"; fails=$((fails+1)); fi
 [ $fails = 0 ] && echo "ALL PASSED" || echo "FAILED ($fails)"
 exit $fails

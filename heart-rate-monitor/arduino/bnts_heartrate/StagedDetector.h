@@ -4,9 +4,13 @@
 // (see tests/test_detector.cpp). This is the logic proven in arduino/sensor_test_staged.
 //
 //   WAITING     No finger. bpm = 0.
-//   CONFIRMING  Beats arrive. A finger only counts once it has given steady, regular beats for
-//               CONFIRM_MS (3 s). Brief touches and flicker are ignored. While confirming, the
-//               beats are already being averaged, so the moment the finger is confirmed the
+//   CONFIRMING  Beats arrive. Once a steady rhythm has lasted DETECT_MS (1 s) the finger is reported as DETECTED
+//               (stage 1: single noise blips and irregular beats never get this far) and every real beat is passed
+//               on, with a count of how many steady beats there have been (progress), so the display can respond
+//               instantly. The reading is VERIFIED (stage 2) on the 4th steady beat (3 good beat gaps) provided the
+//               rhythm has lasted at least CONFIRM_MS (1.5 s): about 2.5-3 s after the finger lands at 72 BPM. Fewer
+//               gaps than that would make the first number drift by several BPM, so this is as fast as is accurate.
+//               While confirming, the beats are already being averaged, so the moment the heart rate is verified the
 //               first reading is ready.
 //   LIVE        bpm holds the current reading. It refreshes once every UPDATE_MS (3 s), never
 //               faster, each time averaging the last AVERAGE_WINDOW_MS (6 s) of beats (odd
@@ -34,8 +38,9 @@ namespace bnts {
 class StagedDetector {
  public:
   // ---- Tuning knobs ----
-  static const uint32_t CONFIRM_MS         = 3000;  // steady beats needed this long to believe a finger
-  static const uint8_t  CONFIRM_MIN_BEATS  = 3;     // ...and at least this many beats
+  static const uint32_t DETECT_MS          = 1000;  // steady beats for this long = "finger detected" (stage 1)
+  static const uint32_t CONFIRM_MS         = 1500;  // the steady rhythm must have lasted at least this long to verify
+  static const uint8_t  CONFIRM_MIN_BEATS  = 4;     // ...and be at least this many beats (= 3 good gaps)
   static const uint8_t  STEADY_PCT         = 30;    // while confirming, each gap within this % of the last
   static const uint32_t UPDATE_MS          = 3000;  // reading refreshes this often (never faster)
   static const uint32_t AVERAGE_WINDOW_MS  = 6000;  // each reading averages this much recent beat history
@@ -58,6 +63,8 @@ class StagedDetector {
 
   uint16_t bpm = 0;         // current reading; 0 unless LIVE
   uint16_t amplitude = 0;   // 0 = nothing heard, 100 = beats are being heard (display uses this as a hint)
+  uint8_t  stage = 0;       // 0 = no finger, 1 = finger detected for 1 s (verifying), 2 = heart rate verified (LIVE)
+  uint8_t  progress = 0;    // steady beats counted so far while verifying (0..CONFIRM_MIN_BEATS); full once verified
 
   State state() const { return state_; }
 
@@ -86,13 +93,19 @@ class StagedDetector {
       handleReading(rLong, rCheck, now);
     }
 
+    if (state_ == LIVE) stage = 2;
+    else if (state_ == CONFIRMING && streakBeats_ >= 2 && (now - streakStartMs_) >= DETECT_MS) stage = 1;
+    else stage = 0;
+    progress = (state_ == LIVE) ? CONFIRM_MIN_BEATS
+             : (stage >= 1 ? (streakBeats_ < CONFIRM_MIN_BEATS ? streakBeats_ : CONFIRM_MIN_BEATS) : 0);
     bpm = (state_ == LIVE) ? (uint16_t)published_ : 0;
     amplitude = (state_ == WAITING) ? 0 : 100;
   }
 
-  // True once per detected beat while LIVE (clears itself when read).
+  // True once per real beat (clears itself when read): while LIVE, and while verifying once a rhythm has started
+  // (two or more steady beats), so the display can respond to the very first beats of a real pulse.
   bool takeBeat() {
-    bool b = beatPending_ && state_ == LIVE;
+    bool b = beatPending_ && (state_ == LIVE || (state_ == CONFIRMING && streakBeats_ >= 2));
     beatPending_ = false;
     return b;
   }

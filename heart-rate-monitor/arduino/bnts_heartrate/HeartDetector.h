@@ -37,6 +37,8 @@ class HeartDetector {
   uint16_t bpm = 0;        // 0 = no valid reading
   uint16_t amplitude = 0;  // pulse size in ADC counts
   uint16_t signal = 0;     // filtered signal 0..1023
+  uint8_t  stage = 0;      // 0 = no reading, 2 = reading available (analog mode has no separate "detected" stage)
+  uint8_t  progress = 0;   // always 0 in analog mode
 
   // Feed one ADC sample (0..1023) with a millisecond timestamp.
   void update(uint16_t raw, uint32_t nowMs) {
@@ -64,6 +66,7 @@ class HeartDetector {
       if (tryBeat(nowMs)) armed_ = false;
     }
     checkTimeout(nowMs);
+    stage = bpm > 0 ? 2 : 0;
   }
 
   // True once per detected beat (clears itself when read).

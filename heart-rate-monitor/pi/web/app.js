@@ -5,12 +5,11 @@
  *   2. MEASURE  After a press the sensor is live. Waits for the first beat, then records every beat for 10 seconds
  *               (heart beats with each real beat, pulse graph, countdown).
  *   3. RESULT   The average heart rate, shown for 10 seconds.
- *   4. SUMMARY  Average, lowest, highest, time and a chart of the heart rate at each beat, shown for 5 seconds.
- *   5. back to IDLE.
+ *   4. back to IDLE.
  * If no pulse was found the screen says so for a few seconds, then returns to IDLE.
  *
  * Add ?debug to the URL for an on-screen readout. For testing, the timings can be shortened with
- * ?measure=4&result=3&summary=2&wait=6&failed=2 (seconds).
+ * ?measure=4&result=3&wait=6&failed=2 (seconds).
  */
 (() => {
   'use strict';
@@ -27,7 +26,6 @@
   // ---- settings you might want to tweak -----------------------------------------
   const MEASURE_MS   = secs('measure', 10);  // how long every beat is recorded once the first beat arrives
   const RESULT_MS    = secs('result', 10);   // how long the average is shown
-  const SUMMARY_MS   = secs('summary', 5);   // how long the summary is shown
   const WAIT_MS      = secs('wait', 20);     // how long to wait for a finger after the screen is pressed
   const FAILED_MS    = secs('failed', 5);    // how long "No pulse found" stays up
   const NO_BEAT_HINT_MS = 3000;              // no beat for this long while measuring -> "keep your finger on the sensor"
@@ -39,15 +37,15 @@
 
   // ---- state ---------------------------------------------------------------
   const S = {
-    mode: 'idle', modeAt: 0,                 // idle | waiting | measure | result | summary | failed
+    mode: 'idle', modeAt: 0,                 // idle | waiting | measure | result | failed
     wave: [], yMin: 480, yMax: 540,
     lastBm: null,                            // the Arduino's beat clock at the last beat we saw
     beats: [], t0: 0, dataT: 0, lastDataAt: 0, beatAt: -99999,
-    res: null, summary: null,
+    res: null,
     connected: false, receiving: false, simulated: false, wrong: false, oldFw: false,
     version: '', reloadPending: false, msgs: 0,
   };
-  const SCREEN = { idle: 'standby', failed: 'standby', waiting: 'measure', measure: 'measure', result: 'result', summary: 'summary' };
+  const SCREEN = { idle: 'standby', failed: 'standby', waiting: 'measure', measure: 'measure', result: 'result' };
 
   // ---- data stream ---------------------------------------------------------
   function connect() {
@@ -110,11 +108,6 @@
     const spanS = Math.round(r.spanMs / 1000);
     $('bpm-num').textContent = Math.round(r.avg);
     $('basis').textContent = `Average of ${r.beats} beats over ${spanS} seconds`;
-    S.summary = { samples: r.rates, min: r.min, max: r.max, avg: r.avg, secs: spanS };
-    $('sum-avg').textContent = Math.round(r.avg);
-    $('sum-min').textContent = Math.round(r.min);
-    $('sum-max').textContent = Math.round(r.max);
-    $('sum-time').textContent = spanS < 60 ? `${spanS} s` : `${Math.floor(spanS / 60)}:${String(spanS % 60).padStart(2, '0')}`;
     setMode('result', now);
   }
 
@@ -123,7 +116,7 @@
   function setMode(mode, now) {
     S.mode = mode; S.modeAt = now;
     const screen = SCREEN[mode];
-    for (const id of ['standby', 'measure', 'result', 'summary']) $(id).classList.toggle('on', id === screen);
+    for (const id of ['standby', 'measure', 'result']) $(id).classList.toggle('on', id === screen);
     $('measure').classList.toggle('waiting', mode === 'waiting');
     if (mode === 'idle' || mode === 'failed') setStandbyText(mode);
   }
@@ -367,60 +360,6 @@
     bar('r-bar', 1 - (now - S.modeAt) / RESULT_MS);
   }
 
-  // ---- SUMMARY screen ------------------------------------------------------------
-  const cvSum = $('cv-sum'), cvSumHeart = $('cv-sum-heart');
-
-  function drawSummary(now) {
-    const sm = S.summary;
-    if (!sm) return;
-    drawHeartOn(cvSumHeart, 1);
-    bar('sum-bar', 1 - (now - S.modeAt) / SUMMARY_MS);
-
-    const [ctx, w, h] = fit(cvSum);
-    ctx.clearRect(0, 0, w, h);
-    const cell = h / 6;
-    ctx.strokeStyle = 'rgba(207,194,224,0.07)'; ctx.lineWidth = 1; ctx.beginPath();
-    for (let x = (w % cell) / 2; x < w; x += cell) { ctx.moveTo(x, 0); ctx.lineTo(x, h); }
-    for (let y = cell / 2; y < h; y += cell)       { ctx.moveTo(0, y); ctx.lineTo(w, y); }
-    ctx.stroke();
-
-    const n = sm.samples.length;
-    const span = Math.max(sm.max - sm.min, 16), mid = (sm.max + sm.min) / 2;
-    const y0 = mid - span * 0.8, y1 = mid + span * 0.8;
-    const padL = w * 0.06, padR = w * 0.06, padT = h * 0.14, padB = h * 0.1;
-    const X = i => n === 1 ? w / 2 : padL + i / (n - 1) * (w - padL - padR);
-    const Y = v => h - padB - (v - y0) / (y1 - y0) * (h - padT - padB);
-    const reveal = clamp((now - S.modeAt) / 900, 0, 1);          // the line draws itself in
-
-    // average line
-    ctx.setLineDash([h * 0.03, h * 0.03]); ctx.strokeStyle = 'rgba(207,194,224,0.45)'; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.moveTo(padL * 0.5, Y(sm.avg)); ctx.lineTo(w - padR * 0.5, Y(sm.avg)); ctx.stroke();
-    ctx.setLineDash([]);
-
-    // the heart rate at each beat
-    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-    if (n > 1) {
-      const upto = reveal * (n - 1);
-      ctx.beginPath(); ctx.moveTo(X(0), Y(sm.samples[0]));
-      for (let i = 1; i <= Math.floor(upto); i++) ctx.lineTo(X(i), Y(sm.samples[i]));
-      const f = upto - Math.floor(upto), j = Math.floor(upto);
-      if (j < n - 1 && f > 0) ctx.lineTo(X(j) + (X(j + 1) - X(j)) * f, Y(sm.samples[j]) + (Y(sm.samples[j + 1]) - Y(sm.samples[j])) * f);
-      ctx.strokeStyle = 'rgba(25,193,202,0.2)'; ctx.lineWidth = h * 0.034; ctx.stroke();
-      ctx.strokeStyle = TEAL; ctx.lineWidth = Math.max(2.5, h * 0.011); ctx.stroke();
-    }
-    // pixel markers on each beat; lowest = purple, highest = lavender
-    const sz = h * 0.05;
-    sm.samples.forEach((v, i) => {
-      if (n > 1 && i > reveal * (n - 1) + 0.001) return;
-      const isMin = v === sm.min, isMax = v === sm.max;
-      const big = (isMin || isMax) && sm.max !== sm.min;
-      const s2 = big ? sz * 1.5 : sz;
-      ctx.fillStyle = big ? (isMax ? LAV : PURPLE) : TEAL2;
-      ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 1;
-      rr(ctx, X(i) - s2 / 2, Y(v) - s2 / 2, s2, s2, s2 * 0.2); ctx.fill(); ctx.stroke();
-    });
-  }
-
   // ---- status chip + debug -----------------------------------------------------------
   function updateChip() {
     const chip = $('chip');
@@ -445,16 +384,14 @@
     // timers
     if (S.mode === 'waiting' && age > WAIT_MS) fail(now);                       // nobody put a finger on
     else if ((S.mode === 'waiting' || S.mode === 'measure') && now - Math.max(S.lastDataAt, S.modeAt) > NO_DATA_MS) fail(now);   // Arduino went quiet
-    else if (S.mode === 'result' && age >= RESULT_MS) setMode('summary', now);
-    else if (S.mode === 'summary' && age >= SUMMARY_MS) setMode('idle', now);
+    else if (S.mode === 'result' && age >= RESULT_MS) setMode('idle', now);
     else if (S.mode === 'failed' && age >= FAILED_MS) setMode('idle', now);
     if (S.reloadPending && S.mode === 'idle' && age > 2000) location.reload();   // pick up an update while idle
 
     const fading = now - S.modeAt < 800;
     if (SCREEN[S.mode] === 'standby' || fading) drawStandby(now / 1000);
     if (SCREEN[S.mode] === 'measure' || (fading && S.mode !== 'idle')) drawMeasure(now);
-    if (S.res && (S.mode === 'result' || (fading && S.mode === 'summary'))) drawResult(now);
-    if (S.mode === 'summary' || (fading && S.mode === 'idle' && S.summary)) drawSummary(now);
+    if (S.res && (S.mode === 'result' || (fading && S.mode === 'idle'))) drawResult(now);
     updateChip();
 
     frames++;

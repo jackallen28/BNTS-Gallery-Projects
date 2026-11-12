@@ -6,10 +6,8 @@ press-to-start heart rate check in the BNTS colours:
 1. **Press screen to start** - a beating pixel heart waits to be pressed.
 2. **Measuring** - after the press the sensor is live. The screen asks for a finger, and when the first beat arrives it
    records **every beat for 10 seconds**: the heart beats with each real beat, the pulse graph scrolls, and a countdown runs.
-3. **Your heart rate** - the **average** heart rate, shown for **10 seconds**.
-4. **Your results** - the summary, shown for **5 seconds**: average, lowest and highest BPM, the time measured, and a chart of
-   the heart rate at each beat.
-5. Back to **Press screen to start**.
+3. **Your heart rate** - the **average** heart rate with *"Average of N beats over S seconds"*, shown for **10 seconds**.
+4. Back to **Press screen to start**.
 
 If no pulse is found (no finger, or fewer than 3 beats), the screen says *"No pulse found"* for 5 seconds and starts over.
 
@@ -32,8 +30,6 @@ The Pi then records the beat times for 10 seconds from the first beat and works 
 - It has none of the "plus or minus one beat" error you get from counting beats in a fixed window (counting in 10 seconds
   can be out by 6 BPM).
 - It uses the Arduino's clock, so delays on the USB cable or in the browser cannot affect it.
-- Lowest and highest are simply the slowest and fastest gap between two beats, unaltered. A healthy heart does not beat
-  evenly (it speeds up and slows down as you breathe), so these are normally a few BPM either side of the average.
 
 Tested (`tests/`): each pulse is exactly one beat at every rate from 40 to 200 BPM; the gaps between reported beat times match
 the real gaps to under a millisecond; the average is exact wherever in a heartbeat the window starts; and the exact compiled
@@ -204,7 +200,7 @@ Edit `/etc/default/bnts-heart`, then `sudo systemctl restart bnts-heart` (and `s
 - `BNTS_ARGS="--port /dev/ttyACM0"` - pin the serial port (default: auto-detect)
 - `ROTATE=180` - rotate the screen if it's mounted upside-down
 - `KIOSK_QUERY="?measure=15&result=8"` - change the timings (in seconds). Options: `measure` (10, how long every beat is
-  recorded), `result` (10), `summary` (5), `wait` (20, how long to wait for a finger after the press), `failed` (5)
+  recorded), `result` (10), `wait` (20, how long to wait for a finger after the press), `failed` (5)
 
 A longer `measure` means more beats in the average. The wording is in `pi/web/index.html`, and the look and the process are in
 `pi/web/app.js` (settings at the top) and `pi/web/style.css`. To add the real BNTS logo, drop a `logo.svg` into `pi/web/`; it
@@ -305,7 +301,7 @@ The Arduino sends 50 lines per second at 115200 baud: `H,<signal>,<beat>,<beatMs
 
 `server.py` forwards each line to the page as JSON over Server-Sent Events at `/events`, adding the time it read the line. The
 page does everything else: a press starts a measurement; the first new `beatMs` starts a 10-second clock; every new `beatMs`
-is recorded; at 10 seconds `measure.js` works out the average; the page shows it for 10 seconds, then the summary for 5 seconds,
+is recorded; at 10 seconds `measure.js` works out the average; the page shows it for 10 seconds,
 then waits for the next press. (Lines in the previous firmware's format are recognised, and the screen asks for the new firmware.)
 
 *For fun only. Not a medical device.*

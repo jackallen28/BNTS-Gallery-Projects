@@ -38,7 +38,7 @@
       <div class="timer"><div id="m-bar" class="bar"></div></div>
     </section>
 
-    <!-- RESULT: the average heart rate, shown for 10 seconds -->
+    <!-- RESULT: the average heart rate, shown for 10 seconds. This is the last screen. -->
     <section id="result" class="screen">
       <div class="eyebrow static">Your heart rate</div>
 
@@ -55,30 +55,6 @@
       </div>
 
       <div class="timer"><div id="r-bar" class="bar"></div></div>
-    </section>
-
-    <!-- SUMMARY: shown for 5 seconds after the result -->
-    <section id="summary" class="screen">
-      <div class="eyebrow static">Your results</div>
-
-      <div id="sum-avg-panel" class="panel">
-        <canvas id="cv-sum-heart"></canvas>
-        <div id="sum-avg">--</div>
-        <div id="sum-avg-unit">Average BPM</div>
-      </div>
-
-      <div id="sum-chart-panel" class="panel">
-        <span class="panel-label">Heart rate at each beat</span>
-        <canvas id="cv-sum"></canvas>
-      </div>
-
-      <div id="sum-stats">
-        <div class="stat"><span class="stat-label">Lowest</span><span class="stat-value"><b id="sum-min">--</b><i>BPM</i></span></div>
-        <div class="stat"><span class="stat-label">Highest</span><span class="stat-value"><b id="sum-max">--</b><i>BPM</i></span></div>
-        <div class="stat"><span class="stat-label">Time</span><span class="stat-value"><b id="sum-time">--</b></span></div>
-      </div>
-
-      <div class="timer"><div id="sum-bar" class="bar"></div></div>
     </section>
 
     <!-- BNTS branding, shared by all screens.  Drop a logo.svg next to this file to show it top-left. -->

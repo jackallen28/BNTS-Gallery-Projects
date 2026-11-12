@@ -4,7 +4,7 @@
 
 CONF=/etc/default/bnts-heart
 [ -r "$CONF" ] && . "$CONF"
-URL="http://127.0.0.1:8080/"
+URL="http://127.0.0.1:8080/${KIOSK_QUERY:-}"      # e.g. KIOSK_QUERY="?measure=15&result=8" in /etc/default/bnts-heart
 PROFILE=/tmp/bnts-kiosk-profile
 
 BROWSER=$(command -v chromium || command -v chromium-browser) || { echo "Chromium not found"; exit 1; }

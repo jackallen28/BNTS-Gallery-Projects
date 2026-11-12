@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # bnts-monitor - watch what the Arduino is sending, like the Arduino IDE's Serial Monitor, from an SSH session.
 #
-#   bnts-monitor           the Arduino's status messages, plus one decoded data line per second   (Ctrl+C to quit)
+#   bnts-monitor           the Arduino's messages, plus one line for every beat (the gap since the last beat and the rate it works out to)
 #   bnts-monitor --all     every single line exactly as the Arduino sends it (about 50 data lines a second)
-#   bnts-monitor --data    only the data lines, decoded, one per second
+#   bnts-monitor --data    only the beat lines
+#   (Ctrl+C to quit)
 #
 # The display service already has the Arduino's serial port open, so this asks the service for a copy of what it
 # receives (the display keeps running). If the service isn't running, it reads the Arduino's port directly instead.
@@ -18,25 +19,31 @@ case "${1:-}" in
   *) echo "Unknown option '$1'. Try: bnts-monitor --help" >&2; exit 2 ;;
 esac
 
-# Turn the raw stream into what is shown. H,<signal>,<bpm>,<beat>,<amplitude>[,<stage>[,<progress>]]
+# Turn the raw stream into what is shown. Data lines look like  H,<signal>,<beat>,<beatMs>.
 # (Python, not awk: the awk on Raspberry Pi OS reads piped input in big blocks, so lines would arrive seconds late.)
 filter() {
   if [ "$MODE" = all ]; then cat; return; fi
   python3 -u -c '
 import sys
 mode = sys.argv[1]
-names = ["no finger", "finger detected (verifying)", "heart rate VERIFIED"]
-n = 0
+last = None
+count = 0
+warned = False
 for line in sys.stdin:
     line = line.rstrip("\r\n")
     if line.startswith("H,"):
-        n += 1
-        if n % 50 == 1:                                   # about once a second
-            f = line.split(",")
-            if len(f) >= 5:
-                stage = names[int(f[5])] if len(f) > 5 and f[5].isdigit() and int(f[5]) < 3 else "-"
-                progress = f[6] if len(f) > 6 else "-"
-                print(f"  live: bpm={f[2]:<3} signal={f[1]:<4} beat={f[3]} amplitude={f[4]:<3} stage={stage}  progress={progress}", flush=True)
+        f = line.split(",")
+        if len(f) == 4 and f[3].isdigit():                  # current firmware: H,signal,beat,beatMs
+            bm = int(f[3])
+            if last is not None and bm != last:             # the beat clock moved on: a new beat
+                gap = (bm - last) & 0xFFFFFFFF
+                count += 1
+                rate = 60000.0 / gap if gap else 0
+                print(f"  beat {count:<3} at {bm} ms   gap {gap} ms = {rate:.0f} BPM", flush=True)
+            last = bm
+        elif not warned:
+            warned = True
+            print("  (these data lines are from OLD firmware: flash the new one with ./flash-arduino.sh)", flush=True)
         continue
     if mode == "data":
         continue

@@ -9,43 +9,55 @@
 <body>
   <main id="stage">
 
-    <!-- STANDBY: shown when nobody is touching the sensor -->
+    <!-- STANDBY: "Press screen to start" (also "No pulse found" if a measurement didn't work) -->
     <section id="standby" class="screen on">
       <canvas id="cv-standby"></canvas>
-      <div id="sb-text">
-        <h1 id="sb-title">Check your heart rate</h1>
-        <p id="sb-sub">Touch the sensor and hold</p>
+      <div id="sb-text" class="press">
+        <h1 id="sb-title">Press screen to start</h1>
+        <p id="sb-sub">to check your heart rate</p>
       </div>
     </section>
 
-    <!-- DETECT: a finger has been steady for 1 s; the heart rate is being verified. Responds to every real beat. -->
-    <section id="detect" class="screen">
-      <canvas id="cv-detect"></canvas>
-      <div id="detect-text">
-        <h1 id="detect-title">Finger detected</h1>
-        <p id="detect-sub">Keep holding</p>
+    <!-- MEASURE: waiting for a finger, then counting down while every beat is recorded -->
+    <section id="measure" class="screen waiting">
+      <div class="eyebrow">Measuring</div>
+
+      <div id="m-panel" class="panel">
+        <canvas id="cv-m-heart"></canvas>
+        <div id="m-wait">Place your finger on the sensor</div>
+        <div id="m-count">10</div>
+        <div id="m-unit">seconds left</div>
+        <div id="m-beats">0 beats</div>
       </div>
-      <div id="pips"><i></i><i></i><i></i><i></i></div>
+
+      <div id="m-wave-panel" class="panel">
+        <span class="panel-label">Pulse</span>
+        <canvas id="cv-wave-m"></canvas>
+      </div>
+
+      <div class="timer"><div id="m-bar" class="bar"></div></div>
     </section>
 
-    <!-- LIVE: BPM number + scrolling pulse graph -->
-    <section id="live" class="screen">
-      <div class="eyebrow">Live heart rate</div>
+    <!-- RESULT: the average heart rate, shown for 10 seconds -->
+    <section id="result" class="screen">
+      <div class="eyebrow static">Your heart rate</div>
 
       <div id="bpm-panel" class="panel">
         <canvas id="cv-heart"></canvas>
         <div id="bpm-num">--</div>
         <div id="bpm-unit">BPM</div>
-        <div id="verified">✓ Heart rate verified</div>
+        <div id="basis">Average heart rate</div>
       </div>
 
       <div id="wave-panel" class="panel">
         <span class="panel-label">Pulse</span>
         <canvas id="cv-wave"></canvas>
       </div>
+
+      <div class="timer"><div id="r-bar" class="bar"></div></div>
     </section>
 
-    <!-- SUMMARY: shown for 5 seconds after the finger comes off -->
+    <!-- SUMMARY: shown for 5 seconds after the result -->
     <section id="summary" class="screen">
       <div class="eyebrow static">Your results</div>
 
@@ -56,7 +68,7 @@
       </div>
 
       <div id="sum-chart-panel" class="panel">
-        <span class="panel-label">Heart rate</span>
+        <span class="panel-label">Heart rate at each beat</span>
         <canvas id="cv-sum"></canvas>
       </div>
 
@@ -66,16 +78,17 @@
         <div class="stat"><span class="stat-label">Time</span><span class="stat-value"><b id="sum-time">--</b></span></div>
       </div>
 
-      <div id="sum-timer"><div id="sum-timer-bar"></div></div>
+      <div class="timer"><div id="sum-bar" class="bar"></div></div>
     </section>
 
-    <!-- BNTS branding, shared by both screens.  Drop a logo.svg next to this file to show it top-left. -->
+    <!-- BNTS branding, shared by all screens.  Drop a logo.svg next to this file to show it top-left. -->
     <img id="logo" src="logo.svg" alt="" onerror="this.remove()">
     <img id="mark" src="bnts-pixels.svg" alt="">
 
     <div id="chip"></div>
     <pre id="debug"></pre>
   </main>
+  <script src="measure.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

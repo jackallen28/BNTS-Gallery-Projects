@@ -82,8 +82,13 @@ if not st.get("connected"):
 print(f"  {G} the display service has the Arduino's port open ({st.get('port')})")
 if st.get("receiving"):
     print(f"  {G} the Pi is receiving heart rate data from the Arduino.")
-    print(f"{N} Rest a finger on the sensor: after about 3 seconds the live screen appears.")
+    print(f"{N} Press the screen to start a measurement, then rest a finger on the sensor.")
+    print(f"{N} The Arduino's own LED (pin 13) flashes with every beat it detects.")
     sys.exit(0)
+if st.get("old_firmware"):
+    print(f"  {R} The Arduino is running OLDER firmware: its data format has changed.")
+    print(f"{N} Put the new firmware on it:  ./flash-arduino.sh")
+    sys.exit(1)
 if st.get("wrong_program"):
     print(f"  {R} The Arduino is transmitting, but not the heart rate data the display needs.")
     print(f"{N} It is sending:  {st.get('other_line')!r}")

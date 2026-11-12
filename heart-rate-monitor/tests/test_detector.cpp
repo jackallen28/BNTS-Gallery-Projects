@@ -1,236 +1,153 @@
-// Host-side test for HeartDetector.  Build & run:
+// Host-side tests for the firmware's beat code. Build & run:
 //   g++ -O1 -std=c++11 -o /tmp/test_detector tests/test_detector.cpp && /tmp/test_detector
+//
+// The firmware does no filtering of the heart rate: every pulse is a beat, and the time of every beat is reported.
+// These tests check that each pulse is exactly one beat (including through the sensor's few-ms flicker on its edges), that
+// the beat TIMES are accurate, and that nothing is reported when there is no pulse.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
-#include <algorithm>
-#include "../arduino/bnts_heartrate/HeartDetector.h"
-#include "../arduino/bnts_heartrate/StagedDetector.h"
+#include "../arduino/bnts_heartrate/AnalogBeats.h"
+#include "../arduino/bnts_heartrate/BeatSensor.h"
 #include "../arduino/bnts_heartrate/StatusLed.h"
-
-static double gauss(double x, double mu, double sd) { double d = (x - mu) / sd; return std::exp(-d * d); }
-
-// Synthetic PPG pulse: systolic peak + smaller dicrotic bump. phase in [0,1).
-static double ppg(double p) { return gauss(p, 0.18, 0.08) + 0.35 * gauss(p, 0.50, 0.09); }
-
-struct Result { int bpmAtEnd; int beats; };
-
-// Run `seconds` of signal at `bpm` (bpm<=0 => no finger, noise only). Returns detector state.
-static Result run(bnts::HeartDetector& d, uint32_t& t, double& phase, double seconds, double bpm,
-                  double amp, double noise, int baseline = 512, bool railed = false) {
-  int beats = 0;
-  uint32_t end = t + (uint32_t)(seconds * 1000);
-  for (; t < end; t += 5) {
-    double v = baseline + ((double)rand() / RAND_MAX - 0.5) * 2 * noise;
-    if (bpm > 0) {
-      phase += (bpm / 60.0) * 0.005;
-      if (phase >= 1) phase -= 1;
-      v += amp * ppg(phase);
-    }
-    int raw = (int)v;
-    if (railed) raw = 1023;
-    if (raw < 0) raw = 0; if (raw > 1023) raw = 1023;
-    d.update(raw, t);
-    if (d.takeBeat()) beats++;
-  }
-  return {d.bpm, beats};
-}
 
 static int failures = 0;
 #define CHECK(cond, ...) do { if (!(cond)) { failures++; printf("  FAIL: "); printf(__VA_ARGS__); printf("\n"); } else { printf("  ok:   "); printf(__VA_ARGS__); printf("\n"); } } while (0)
 
+// ---------------------------------------------------------------------------------------------- digital
+// A digital pulse train like the real sensor: pulses of `width` ms every `period` ms, with 5 ms flicker on both edges.
+static int pulseTrain(uint32_t t, uint32_t t0, double period, uint32_t width) {
+  if (t < t0) return 0;
+  uint32_t ph = (uint32_t)fmod((double)(t - t0), period);
+  auto flicker = [&](uint32_t d, int hi) { return ((d / 5) % 2 == 0) ? hi : !hi; };
+  if (ph < 15) return flicker(ph, 1);
+  if (ph < width) return 1;
+  if (ph < width + 15) return flicker(ph - width, 0);
+  return 0;
+}
+
+struct DigitalRun { std::vector<uint32_t> beats; int flags = 0; };
+
+// Run `seconds` of a pulse train (start at t0) through BeatSensor; returns every reported beat time.
+static DigitalRun runDigital(double seconds, double bpm, uint32_t width, uint32_t t0 = 500) {
+  bnts::BeatSensor s; DigitalRun r; double period = 60000.0 / bpm; uint32_t last = 0;
+  for (uint32_t t = 0; t < (uint32_t)(seconds * 1000); t++) {
+    s.update(pulseTrain(t, t0, period, width), t);
+    if (s.takeBeat()) { r.flags++; if (s.lastBeatMs() != last) { r.beats.push_back(s.lastBeatMs()); last = s.lastBeatMs(); } }
+  }
+  return r;
+}
+static int pulsesIn(double seconds, double bpm, uint32_t t0 = 500) {
+  double period = 60000.0 / bpm; int n = 0;
+  for (double s = t0; s < seconds * 1000 - 60; s += period) n++;    // a pulse is reported ~45 ms after it starts
+  return n;
+}
+// The average the display computes: 60000 * (beats - 1) / (last beat - first beat).
+static double averageBpm(const std::vector<uint32_t>& b) { return 60000.0 * (b.size() - 1) / (double)(b.back() - b.front()); }
+
+static void digitalTests() {
+  printf("1. nothing on the sensor: no beats\n");
+  { DigitalRun r = runDigital(10, 1, 0); r.beats.clear(); bnts::BeatSensor s; int f = 0;
+    for (uint32_t t = 0; t < 10000; t++) { s.update(false, t); if (s.takeBeat()) f++; }
+    CHECK(f == 0, "0 beats from a pin that stays low (%d)", f); }
+
+  printf("2. every pulse is exactly one beat, at any heart rate (flicker on each edge)\n");
+  for (double bpm : {40.0, 55.0, 72.0, 90.0, 120.0, 160.0, 200.0}) {
+    uint32_t width = (uint32_t)std::min(250.0, 60000.0 / bpm * 0.4);
+    DigitalRun r = runDigital(20, bpm, width); int want = pulsesIn(20, bpm);
+    CHECK((int)r.beats.size() == want && r.flags == want, "%3.0f BPM: %d beats for %d pulses", bpm, (int)r.beats.size(), want);
+  }
+
+  printf("3. the beat times are accurate: average rate from the beat times matches the true rate\n");
+  for (double bpm : {48.0, 63.0, 72.0, 88.0, 110.0, 150.0}) {
+    uint32_t width = (uint32_t)std::min(250.0, 60000.0 / bpm * 0.4);
+    DigitalRun r = runDigital(12, bpm, width); double avg = averageBpm(r.beats);
+    CHECK(std::fabs(avg - bpm) < 0.3, "true %5.1f BPM -> measured %6.2f BPM", bpm, avg);
+  }
+
+  printf("4. a short pulse (80 ms) is still a beat; the sensor's flicker is not\n");
+  { DigitalRun r = runDigital(10, 70, 80); int want = pulsesIn(10, 70); CHECK((int)r.beats.size() == want, "%d beats for %d pulses of 80 ms", (int)r.beats.size(), want); }
+
+  printf("5. pure random flicker for 20 s: no beats\n");
+  { bnts::BeatSensor s; int f = 0; srand(5); for (uint32_t t = 0; t < 20000; t++) { s.update(rand() & 1, t); if (s.takeBeat()) f++; }
+    CHECK(f == 0, "0 beats (%d)", f); }
+
+  printf("6. heart-rate variation is reported, not hidden: beat gaps that vary +-12%% come through as they are\n");
+  { bnts::BeatSensor s; std::vector<double> truth; double t = 600; srand(9); std::vector<uint32_t> got; uint32_t last = 0;
+    std::vector<double> starts; for (int i = 0; i < 14; i++) { starts.push_back(t); t += 833 * (1 + 0.12 * (2 * rand() / (double)RAND_MAX - 1)); }
+    for (uint32_t ms = 0; ms < 12000; ms++) {
+      int pin = 0;
+      for (double st : starts) { double d = ms - st; if (d >= 0 && d < 260) pin = (d < 15) ? (((int)(d / 5) % 2 == 0) ? 1 : 0) : (d < 250 ? 1 : (((int)((d - 250) / 5) % 2 == 0) ? 0 : 1)); }
+      s.update(pin, ms); if (s.takeBeat() && s.lastBeatMs() != last) { got.push_back(s.lastBeatMs()); last = s.lastBeatMs(); }
+    }
+    bool same = got.size() == starts.size() - (starts.back() > 11800 ? 1 : 0) || got.size() == starts.size(); double worst = 0;
+    for (size_t i = 1; i < got.size() && i < starts.size(); i++) worst = std::max(worst, std::fabs((double)(got[i] - got[i - 1]) - (starts[i] - starts[i - 1])));
+    CHECK(same && worst < 3.0, "%d beats; every gap between beats reproduced to within %.1f ms", (int)got.size(), worst); }
+
+  printf("7. synthetic waveform for the display graph\n");
+  { bnts::BeatSensor s; uint32_t beatAt = 0; bool seen = false; int peak = 0; uint32_t peakAt = 0; uint16_t late = 0;
+    for (uint32_t t = 0; t < 6000; t++) {
+      s.update(pulseTrain(t, 500, 833, 250), t);
+      if (s.takeBeat()) { beatAt = t; seen = true; }
+      if (seen && t > 3000) { int v = s.syntheticSignal(t); uint32_t since = t - beatAt; if (since < 400 && v > peak) { peak = v; peakAt = since; } if (since == 700) late = v; } }
+    CHECK(peak > 590 && peakAt > 80 && peakAt < 160, "pulse peaks at %d, %u ms after the beat", peak, peakAt);
+    CHECK(late == 512, "flat (512) between beats: %d", late);
+    bnts::BeatSensor idle; CHECK(idle.syntheticSignal(5000) == 512, "flat line (512) before any beat"); }
+}
+
+// ---------------------------------------------------------------------------------------------- analog
+static double gauss(double x, double mu, double sd) { double d = (x - mu) / sd; return std::exp(-d * d); }
+static double ppg(double p) { return gauss(p, 0.18, 0.08) + 0.35 * gauss(p, 0.50, 0.09); }
+
+static std::vector<uint32_t> runAnalog(bnts::AnalogBeats& a, uint32_t& t, double& phase, double seconds, double bpm, double amp, double noise, int baseline = 512, bool railed = false) {
+  std::vector<uint32_t> beats; uint32_t end = t + (uint32_t)(seconds * 1000);
+  for (; t < end; t += 5) {
+    double v = baseline + ((double)rand() / RAND_MAX - 0.5) * 2 * noise;
+    if (bpm > 0) { phase += (bpm / 60.0) * 0.005; if (phase >= 1) phase -= 1; v += amp * ppg(phase); }
+    int raw = (int)v; if (railed) raw = 1023; if (raw < 0) raw = 0; if (raw > 1023) raw = 1023;
+    a.update(raw, t); if (a.takeBeat()) beats.push_back(a.lastBeatMs());
+  }
+  return beats;
+}
+
+static void analogTests() {
+  srand(7); bnts::AnalogBeats a; uint32_t t = 0; double ph = 0;
+  printf("8. analog: an empty sensor (noise only) gives no beats\n");
+  { auto b = runAnalog(a, t, ph, 10, 0, 0, 4); CHECK(b.empty(), "%d beats", (int)b.size()); }
+  printf("9. analog: one beat per pulse at 72, 118 and 52 BPM, and the beat times give the right average\n");
+  for (double bpm : {72.0, 118.0, 52.0}) {
+    runAnalog(a, t, ph, 3, bpm, 80, 6);                               // let the threshold settle
+    auto b = runAnalog(a, t, ph, 15, bpm, 80, 6); int want = (int)std::round(15.0 * bpm / 60.0);
+    double avg = b.size() > 1 ? 60000.0 * (b.size() - 1) / (double)(b.back() - b.front()) : 0;
+    CHECK(std::abs((int)b.size() - want) <= 1 && std::fabs(avg - bpm) < 1.5, "%3.0f BPM: %d beats (expect ~%d), average from beat times %.1f", bpm, (int)b.size(), want, avg);
+  }
+  printf("10. analog: a small signal at a different baseline still works\n");
+  { runAnalog(a, t, ph, 3, 90, 35, 3, 380); auto b = runAnalog(a, t, ph, 15, 90, 35, 3, 380); CHECK(b.size() >= 21 && b.size() <= 24, "%d beats in 15 s at 90 BPM", (int)b.size()); }
+  printf("11. analog: a sensor pinned at 1023 gives no beats\n");
+  { auto b = runAnalog(a, t, ph, 8, 0, 0, 0, 512, true); CHECK(b.empty(), "%d beats", (int)b.size()); }
+}
+
+// ---------------------------------------------------------------------------------------------- LED
+static void ledTests() {
+  printf("12. the LED flashes briefly with each beat and is off otherwise\n");
+  bnts::StatusLed led; bool ok = true;
+  for (uint32_t t = 0; t < 3000; t++) if (led.update(false, t)) ok = false;
+  CHECK(ok, "off for 3 s with no beats");
+  std::vector<uint32_t> beats = {3100, 3900, 4700}; int onMs = 0, mism = 0;
+  for (uint32_t t = 3000; t < 5500; t++) {
+    bool beat = std::find(beats.begin(), beats.end(), t) != beats.end();
+    bool on = led.update(beat, t); bool expect = false;
+    for (uint32_t b : beats) if (t >= b && t < b + bnts::StatusLed::ON_MS) expect = true;
+    if (on) onMs++; if (on != expect) mism++;
+  }
+  CHECK(mism == 0, "on for exactly %u ms after each beat (mismatches %d)", (unsigned)bnts::StatusLed::ON_MS, mism);
+  CHECK(onMs == 3 * (int)bnts::StatusLed::ON_MS, "3 beats -> 3 flashes (%d ms lit in total)", onMs);
+}
+
 int main() {
-  srand(7);
-  bnts::HeartDetector d; uint32_t t = 0; double ph = 0;
-
-  printf("1. no finger (ambient noise only) for 10 s\n");
-  Result r = run(d, t, ph, 10, 0, 0, 4);
-  CHECK(r.bpmAtEnd == 0 && r.beats == 0, "bpm=%d beats=%d (expect 0/0)", r.bpmAtEnd, r.beats);
-
-  printf("2. finger on, 72 BPM, amplitude 80, noise 6\n");
-  r = run(d, t, ph, 4, 72, 80, 6);
-  printf("     (after 4 s) bpm=%d\n", r.bpmAtEnd);
-  r = run(d, t, ph, 16, 72, 80, 6);
-  CHECK(std::abs(r.bpmAtEnd - 72) <= 2, "bpm=%d (expect 72 +-2)", r.bpmAtEnd);
-  CHECK(r.beats >= 18 && r.beats <= 21, "beats in 16 s = %d (expect ~19)", r.beats);
-
-  printf("3. rate rises to 118 BPM\n");
-  r = run(d, t, ph, 14, 118, 80, 6);
-  CHECK(std::abs(r.bpmAtEnd - 118) <= 3, "bpm=%d (expect 118 +-3)", r.bpmAtEnd);
-
-  printf("4. rate drops to 52 BPM\n");
-  r = run(d, t, ph, 20, 52, 80, 6);
-  CHECK(std::abs(r.bpmAtEnd - 52) <= 3, "bpm=%d (expect 52 +-3)", r.bpmAtEnd);
-
-  printf("5. finger removed -> bpm must return to 0 within 4 s\n");
-  r = run(d, t, ph, 4, 0, 0, 4);
-  CHECK(r.bpmAtEnd == 0, "bpm=%d (expect 0)", r.bpmAtEnd);
-
-  printf("6. finger back on at a different baseline (380), small amplitude 35, 90 BPM\n");
-  r = run(d, t, ph, 15, 90, 35, 3, 380);
-  CHECK(std::abs(r.bpmAtEnd - 90) <= 3, "bpm=%d (expect 90 +-3)", r.bpmAtEnd);
-
-  printf("7. sensor pinned at 1023 for 8 s -> no reading\n");
-  r = run(d, t, ph, 8, 0, 0, 0, 512, true);
-  CHECK(r.bpmAtEnd == 0, "bpm=%d (expect 0)", r.bpmAtEnd);
-
-  // ---------------------------------------------------------------- digital mode (staged)
-  printf("\n--- DIGITAL mode: StagedDetector (1 kHz pin samples, chatter on pulse edges like the real sensor) ---\n");
-  using SD = bnts::StagedDetector;
-
-  struct Seg { double fromS, toS; int kind; double bpm; int widthMs; };   // kind 0 low, 1 pulses, 2 random flicker
-  struct Trace { std::vector<int> bpmAt; std::vector<uint32_t> updateTimes; int beats = 0; uint32_t liveAtMs = 0; };
-
-  auto simulate = [&](const std::vector<Seg>& segs, double totalS) {
-    SD det; Trace tr;
-    for (uint32_t t = 0; t < (uint32_t)(totalS * 1000); t++) {
-      int pin = 0;
-      for (const Seg& sg : segs) {
-        if (t < (uint32_t)(sg.fromS * 1000) || t >= (uint32_t)(sg.toS * 1000)) continue;
-        if (sg.kind == 1) {
-          uint32_t t0 = (uint32_t)(sg.fromS * 1000), period = (uint32_t)(60000.0 / sg.bpm), ph = (t - t0) % period;
-          auto ch = [&](uint32_t d, int hi) { return ((d / 5) % 2 == 0) ? hi : !hi; };
-          if (ph < 15) pin = ch(ph, 1); else if (ph < (uint32_t)sg.widthMs) pin = 1;
-          else if (ph < (uint32_t)sg.widthMs + 15) pin = ch(ph - sg.widthMs, 0); else pin = 0;
-        } else if (sg.kind == 2) pin = rand() & 1;
-      }
-      det.update(pin, t);
-      if (det.takeBeat()) tr.beats++;
-      SD::Event e; int a, b;
-      while (det.takeEvent(e, a, b)) if (e == SD::EV_CONFIRMED || e == SD::EV_UPDATE || e == SD::EV_REAL) tr.updateTimes.push_back(t);
-      if (det.bpm > 0 && tr.liveAtMs == 0) tr.liveAtMs = t;
-      tr.bpmAt.push_back(det.bpm);
-    }
-    return tr;
-  };
-  auto maxBpm = [](const Trace& tr, double fromS, double toS) {
-    int m = 0; for (size_t i = (size_t)(fromS * 1000); i < tr.bpmAt.size() && i < (size_t)(toS * 1000); i++) m = std::max(m, tr.bpmAt[i]); return m; };
-
-  printf("8. nothing on the sensor for 8 s\n");
-  { Trace tr = simulate({}, 8); CHECK(maxBpm(tr, 0, 8) == 0 && tr.beats == 0, "bpm stays 0, no beats flagged"); }
-
-  printf("9. a brief 2.2 s touch must NOT be treated as a finger\n");
-  { Trace tr = simulate({{2, 4.2, 1, 72, 250}}, 12); CHECK(maxBpm(tr, 0, 12) == 0, "bpm stayed 0 (max seen %d)", maxBpm(tr, 0, 12)); }
-
-  printf("10. finger on at 72 BPM: confirmed after ~3 s with the reading ready at once\n");
-  { Trace tr = simulate({{2, 30, 1, 72, 250}}, 30);
-    double confirmAfter = (tr.liveAtMs - 2000) / 1000.0;
-    CHECK(confirmAfter >= 2.0 && confirmAfter <= 3.4, "first reading %.1f s after the finger arrived (expect 2-3.4: the 4th steady beat)", confirmAfter);
-    CHECK(std::abs(tr.bpmAt[tr.liveAtMs] - 72) <= 2, "first reading = %d BPM (expect 72 +-2)", tr.bpmAt[tr.liveAtMs]);
-    CHECK(std::abs(tr.bpmAt[29000] - 72) <= 2, "still %d BPM after 28 s", tr.bpmAt[29000]);
-    CHECK(tr.beats >= 30 && tr.beats <= 36, "beat flags = %d in 28 s (expect ~33; chatter must not double count)", tr.beats);
-    bool spaced = true; for (size_t i = 1; i < tr.updateTimes.size(); i++) if (tr.updateTimes[i] - tr.updateTimes[i - 1] < 2990) spaced = false;
-    CHECK(spaced && tr.updateTimes.size() >= 8, "%d updates, never closer than 3 s apart", (int)tr.updateTimes.size()); }
-
-  printf("11. a 3.3 s glitch at 112 BPM is dropped (tried at 5 different positions)\n");
-  { bool ok = true; int worst = 0;
-    for (double off : {29.0, 29.6, 30.2, 30.8, 31.4}) {
-      Trace tr = simulate({{2, off, 1, 72, 250}, {off, off + 3.3, 1, 112, 180}, {off + 3.3, 60, 1, 72, 250}}, 60);
-      int m = maxBpm(tr, 20, 60); worst = std::max(worst, m); if (m > 72 + SD::OUTLIER_BPM + 3) ok = false; }
-    CHECK(ok, "highest reading shown while glitching = %d BPM (expect <= 90: drift within the 15 BPM tolerance is fine, 112 never shown)", worst); }
-
-  printf("12. a sustained change to 100 BPM is accepted within 12 s\n");
-  { Trace tr = simulate({{2, 30, 1, 72, 250}, {30, 70, 1, 100, 200}}, 70);
-    int at = 0; for (int s = 30; s < 70; s++) if (std::abs(tr.bpmAt[s * 1000] - 100) <= 3) { at = s; break; }
-    CHECK(at > 0 && at <= 42, "showing ~100 BPM from t=%d s (change began at 30 s)", at);
-    CHECK(std::abs(tr.bpmAt[69000] - 100) <= 3, "final reading %d BPM", tr.bpmAt[69000]); }
-
-  printf("13. finger removed: bpm back to 0 within 5 s\n");
-  { Trace tr = simulate({{2, 25, 1, 72, 250}}, 31);
-    CHECK(tr.bpmAt[24500] > 0 && tr.bpmAt[30500] == 0, "bpm %d just before removal, %d five seconds later", tr.bpmAt[24500], tr.bpmAt[30500]);
-    CHECK(tr.bpmAt[26300] > 0, "reading still held 1.3+ s after the finger left (%d BPM): the 3 s adjusting window", tr.bpmAt[26300]);
-    CHECK(tr.bpmAt[28800] == 0, "reading cleared once 3 s have passed without a beat (%d)", tr.bpmAt[28800]); }
-
-  printf("13b. finger lifted and put back within 2 s (adjusting) must not drop the reading\n");
-  { Trace tr = simulate({{2, 20, 1, 72, 250}, {22, 45, 1, 72, 250}}, 45);
-    int lowest = 999; for (int ms = 12000; ms < 45000; ms++) lowest = std::min(lowest, tr.bpmAt[ms]);
-    CHECK(lowest > 0, "bpm never dropped to 0 during the adjustment (lowest %d)", lowest);
-    CHECK(std::abs(tr.bpmAt[44000] - 72) <= 3, "still %d BPM afterwards", tr.bpmAt[44000]); }
-
-  printf("14. slow pulse, 50 BPM (300 ms pulses)\n");
-  { Trace tr = simulate({{2, 40, 1, 50, 300}}, 40);
-    double confirmAfter = (tr.liveAtMs - 2000) / 1000.0;
-    CHECK(tr.liveAtMs > 0 && confirmAfter <= 6.0, "confirmed %.1f s after the finger arrived", confirmAfter);
-    CHECK(std::abs(tr.bpmAt[39000] - 50) <= 2, "reading %d BPM (expect 50 +-2)", tr.bpmAt[39000]); }
-
-  printf("15. pure random flicker (no finger) for 20 s -> never a reading\n");
-  { Trace tr = simulate({{1, 21, 2, 0, 0}}, 22); CHECK(maxBpm(tr, 0, 22) == 0, "bpm stayed 0 (max %d)", maxBpm(tr, 0, 22)); }
-
-  printf("16. synthetic waveform for the display graph\n");
-  { SD det; uint32_t beatAt = 0; bool seen = false; int peak = 0; uint32_t peakAt = 0; uint16_t late = 0;
-    for (uint32_t t = 0; t < 14000; t++) {
-      uint32_t ph = t % 833; det.update(ph < 250, t);
-      if (det.takeBeat()) { beatAt = t; seen = true; }
-      if (seen && det.bpm > 0 && t > 9000) {
-        int v = det.syntheticSignal(t); uint32_t since = t - beatAt;
-        if (since < 400 && v > peak) { peak = v; peakAt = since; }
-        if (since == 700) late = v; } }
-    CHECK(peak > 590 && peakAt > 80 && peakAt < 160, "pulse peaks at %d, %u ms after the beat (expect >590, 80-160 ms)", peak, peakAt);
-    CHECK(late == 512, "back to baseline (512) between beats: %d", late);
-    SD idle; CHECK(idle.syntheticSignal(5000) == 512 && idle.amplitude == 0, "flat line and amplitude 0 when idle"); }
-
-  printf("19. interactive verification: real beats and progress reported from the start of a rhythm\n");
-  {
-    SD det; std::vector<std::pair<uint32_t,int>> flagged;   // (time, progress) of each beat flag
-    uint32_t t1 = 0, t2 = 0, firstBeatMs = 0; int stageSeen = 0; bool progressMonotone = true; int lastP = 0;
-    int beatsBeforeStage1 = 0, beatsInLive = 0;
-    for (uint32_t t = 0; t < 8000; t++) {
-      int pin = 0;
-      if (t >= 1000) {                                        // 72 BPM pulses with edge chatter from t = 1 s
-        uint32_t ph = (t - 1000) % 833;
-        auto ch = [&](uint32_t d, int hi) { return ((d / 5) % 2 == 0) ? hi : !hi; };
-        if (ph < 15) pin = ch(ph, 1); else if (ph < 250) pin = 1; else if (ph < 265) pin = ch(ph - 250, 0);
-      }
-      det.update(pin, t);
-      if (det.stage >= 1 && t1 == 0) t1 = t;
-      if (det.stage == 2 && t2 == 0) t2 = t;
-      if (det.stage > stageSeen) stageSeen = det.stage;
-      if (det.progress < lastP && det.stage >= 1) progressMonotone = false;
-      lastP = det.progress;
-      if (det.takeBeat()) {
-        flagged.push_back({t, det.progress});
-        if (det.stage == 0) beatsBeforeStage1++;
-        if (det.stage == 2) beatsInLive++;
-      }
-    }
-    CHECK(t1 >= 2000 && t1 <= 3300, "'finger detected' (stage 1) %.1f s after the finger landed (expect 1-2.3 s)", (t1 - 1000) / 1000.0);
-    CHECK(t2 > t1 && (t2 - 1000) <= 3300, "'verified' (stage 2) %.1f s after the finger landed, after stage 1", (t2 - 1000) / 1000.0);
-    CHECK(flagged.size() >= 7 && flagged.size() <= 10, "%d beat flags in 7 s (every real beat from the 2nd one: expect about 8)", (int)flagged.size());
-    CHECK(beatsInLive >= 4, "beats keep being flagged once live (%d)", beatsInLive);
-    CHECK(progressMonotone && det.progress == 4, "progress only goes up and ends full (4): ends at %d", det.progress);
-    bool reaches4 = false; for (auto& f : flagged) if (f.second == 4) reaches4 = true;
-    CHECK(reaches4, "progress 4 is reached on a real beat (the 4th steady beat)");
-  }
-
-  printf("20. a one-off noise blip never shows 'detected' and never flags a beat\n");
-  { SD det; int flags = 0, maxStage = 0;
-    for (uint32_t t = 0; t < 6000; t++) { det.update((t >= 2000 && t < 2150), t); if (det.takeBeat()) flags++; if (det.stage > maxStage) maxStage = det.stage; }
-    CHECK(maxStage == 0 && flags == 0, "stage stayed 0 and no beat was flagged (stage %d, flags %d)", maxStage, flags); }
-
-  printf("\n--- LED (pin 13) blink pattern ---\n");
-  printf("18. off with no finger, flashing 0.5 s on / 0.5 s off while a finger is detected\n");
-  {
-    bnts::StatusLed led; bool ok = true; int mism = 0;
-    for (uint32_t t = 0; t < 5000; t++) if (led.update(false, t)) ok = false;
-    CHECK(ok, "stays off for 5 s with no finger");
-    // finger detected from t = 7123 ms
-    uint32_t f0 = 7123; int edges = 0; bool prev = led.update(true, f0);
-    CHECK(prev, "turns ON the moment the finger is detected");
-    for (uint32_t t = f0; t < f0 + 4000; t++) {
-      bool on = led.update(true, t);
-      bool expect = ((t - f0) / 500) % 2 == 0;
-      if (on != expect) mism++;
-      if (on != prev) edges++;
-      prev = on;
-    }
-    CHECK(mism == 0, "on for 0-500 ms, off for 500-1000 ms, on again... (mismatches: %d)", mism);
-    CHECK(edges == 7, "7 changes in 4 s (on,off,on,off,on,off,on,off): %d", edges);
-    CHECK(!led.update(false, f0 + 4001), "turns OFF as soon as the finger is gone");
-    bool back = led.update(true, f0 + 9000);
-    CHECK(back, "when the finger is back the blink starts again with ON");
-  }
-
+  digitalTests(); analogTests(); ledTests();
   printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "ALL PASSED", failures, failures == 1 ? "" : "s");
   return failures ? 1 : 0;
 }

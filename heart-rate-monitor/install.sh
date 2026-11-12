@@ -48,6 +48,9 @@ BNTS_ARGS=""
 # Rotate the screen if it's mounted upside-down: 0, 90, 180 or 270. Empty = leave alone.
 ROTATE=""
 
+# Timings of the display, in seconds, e.g. KIOSK_QUERY="?measure=15&result=8" (see the README). Empty = the defaults.
+KIOSK_QUERY=""
+
 # Check GitHub for a new version at every boot and install it: 1 = yes, 0 = no.
 AUTO_UPDATE="1"
 EOF

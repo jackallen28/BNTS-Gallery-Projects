@@ -1,10 +1,16 @@
 /* BNTS heart rate display.
- * Listens to /events (from server.py) and draws four screens:
- *   - STANDBY: animated pixel heart + rippling pixel grid, shown while nobody is touching the sensor
- *   - DETECT:  "Finger detected" - the heart beats with every real beat and a pixel lights for each, while the heart rate is verified
- *   - LIVE:    big BPM number and a scrolling pulse graph
- *   - SUMMARY: 5 seconds of results (average, lowest, highest, time) after the finger comes off
- * Add ?debug to the URL for an on-screen readout.
+ *
+ * The process (nothing is filtered; every beat the Arduino reports is used):
+ *   1. IDLE     "Press screen to start" (animated pixel heart).
+ *   2. MEASURE  After a press the sensor is live. Waits for the first beat, then records every beat for 10 seconds
+ *               (heart beats with each real beat, pulse graph, countdown).
+ *   3. RESULT   The average heart rate, shown for 10 seconds.
+ *   4. SUMMARY  Average, lowest, highest, time and a chart of the heart rate at each beat, shown for 5 seconds.
+ *   5. back to IDLE.
+ * If no pulse was found the screen says so for a few seconds, then returns to IDLE.
+ *
+ * Add ?debug to the URL for an on-screen readout. For testing, the timings can be shortened with
+ * ?measure=4&result=3&summary=2&wait=6&failed=2 (seconds).
  */
 (() => {
   'use strict';
@@ -13,38 +19,35 @@
   const TEAL = '#19c1ca', TEAL2 = '#04bbc1', PURPLE = '#704988', LAV = '#cfc2e0';
   const HEART_COLOURS = [TEAL, PURPLE, LAV, TEAL2];
 
-  // ---- settings you might want to tweak -----------------------------------------
-  const FRAME_MS        = 33;    // ~30 fps keeps the Pi 3 cool
-  const WAVE_SECONDS    = 6;     // width of the scrolling graph
-  const SAMPLE_HZ       = 50;    // must match the Arduino
-  const BPM_ON_AFTER    = 3;     // consecutive valid readings before switching to LIVE
-  const PULSE_HINT_AMP  = 25;    // amplitude at or above this = beats are being heard
-  const END_AFTER_MS    = 300;   // finger gone this long (the Arduino has already waited 3 s) -> results screen
-  const HOLD_MAX_MS     = 12000; // safety: beats but no reading for this long also ends the session
-  const SUMMARY_MS      = 5000;  // how long the results screen stays up
-  const SESSION_SAMPLE_MS = 3000;// the readings are recorded this often for the results
-  const CONFIRM_SECONDS = 2;     // roughly how long the Arduino takes to verify a finger before the first reading
-  const DETECT_LOST_MS  = 400;   // the finger signal gone this long while verifying -> back to standby with a hint
-  const HINT_MS         = 3500;  // how long the "keep holding" hint stays up after a finger is lifted too early
-  const WAVE_POINTS     = WAVE_SECONDS * SAMPLE_HZ;
-
   const $ = id => document.getElementById(id);
   const params = new URLSearchParams(location.search);
   if (params.has('debug')) document.body.classList.add('debug');
+  const secs = (key, def) => (params.has(key) ? Math.max(0.5, +params.get(key) || def) : def) * 1000;
+
+  // ---- settings you might want to tweak -----------------------------------------
+  const MEASURE_MS   = secs('measure', 10);  // how long every beat is recorded once the first beat arrives
+  const RESULT_MS    = secs('result', 10);   // how long the average is shown
+  const SUMMARY_MS   = secs('summary', 5);   // how long the summary is shown
+  const WAIT_MS      = secs('wait', 20);     // how long to wait for a finger after the screen is pressed
+  const FAILED_MS    = secs('failed', 5);    // how long "No pulse found" stays up
+  const NO_BEAT_HINT_MS = 3000;              // no beat for this long while measuring -> "keep your finger on the sensor"
+  const NO_DATA_MS   = 3000;                 // nothing at all from the Arduino for this long -> give up
+  const FRAME_MS     = 33;                   // ~30 fps keeps the Pi 3 cool
+  const WAVE_SECONDS = 6;                    // width of the scrolling graph
+  const SAMPLE_HZ    = 50;                   // must match the Arduino
+  const WAVE_POINTS  = WAVE_SECONDS * SAMPLE_HZ;
 
   // ---- state ---------------------------------------------------------------
   const S = {
-    mode: 'standby', modeAt: 0,
-    wave: [],
-    bpm: 0, shownBpm: 0,
-    validRun: 0, lastValid: 0,
-    beatAt: -99999, amp: 0, stage: 0, progress: 0, hasProgress: false, lastHeard: 0, stageLowSince: 0, hintUntil: 0,
-    session: { samples: [], startAt: 0, nextSampleAt: 0 }, summary: null, summaryUntil: 0,
-    yMin: 480, yMax: 540,
-    connected: false, receiving: false, simulated: false,
-    version: '', reloadPending: false, wrong: false,
-    msgs: 0,
+    mode: 'idle', modeAt: 0,                 // idle | waiting | measure | result | summary | failed
+    wave: [], yMin: 480, yMax: 540,
+    lastBm: null,                            // the Arduino's beat clock at the last beat we saw
+    beats: [], t0: 0, dataT: 0, lastDataAt: 0, beatAt: -99999,
+    res: null, summary: null,
+    connected: false, receiving: false, simulated: false, wrong: false, oldFw: false,
+    version: '', reloadPending: false, msgs: 0,
   };
+  const SCREEN = { idle: 'standby', failed: 'standby', waiting: 'measure', measure: 'measure', result: 'result', summary: 'summary' };
 
   // ---- data stream ---------------------------------------------------------
   function connect() {
@@ -52,8 +55,9 @@
     es.onmessage = e => {
       let m; try { m = JSON.parse(e.data); } catch (_) { return; }
       if (m.type === 'status') {
-        S.connected = !!m.connected; S.receiving = !!m.receiving; S.simulated = !!m.simulated; S.wrong = !!m.wrong_program;
-        // An update changed the display files: reload, but only once nobody is using the screen.
+        S.connected = !!m.connected; S.receiving = !!m.receiving; S.simulated = !!m.simulated;
+        S.wrong = !!m.wrong_program; S.oldFw = !!m.old_firmware;
+        // An update changed the display files: reload, but only while nobody is using the screen.
         if (m.version) { if (!S.version) S.version = m.version; else if (m.version !== S.version) S.reloadPending = true; }
       } else if (m.type === 'h') {
         onSample(m);
@@ -62,55 +66,80 @@
     es.onerror = () => { S.connected = false; S.receiving = false; };
   }
 
+  // One line from the Arduino: the pulse graph, and (when the beat clock changes) a new beat.
   function onSample(m) {
     const now = performance.now();
-    S.msgs++;
-    S.amp = m.a;
-    // Stage from the Arduino: 0 = no finger, 1 = finger detected for 1 s (verifying), 2 = heart rate verified.
-    // Older firmware doesn't send it, so work it out from the other fields.
-    S.stage = (m.g !== undefined) ? m.g : (m.b > 0 ? 2 : (m.a >= PULSE_HINT_AMP ? 1 : 0));
-    S.hasProgress = m.p !== undefined; S.progress = m.p || 0;
-    if (m.x) S.beatAt = now;                       // a real beat (the Arduino passes these on from the 2nd steady beat)
+    S.msgs++; S.dataT = m.t; S.lastDataAt = now;
     S.wave.push(m.s);
     if (S.wave.length > WAVE_POINTS) S.wave.shift();
 
-    if (m.b > 0 || m.a >= PULSE_HINT_AMP) S.lastHeard = now;
-    if (m.b > 0) {
-      S.bpm = m.b; S.validRun++; S.lastValid = now;
-      // A confirmed finger starts LIVE (and cuts the results short if a new student steps up).
-      if (S.mode !== 'live' && S.validRun >= BPM_ON_AFTER) setMode('live', now);
-    } else {
-      S.validRun = 0;
+    if (m.bm !== undefined) {
+      if (S.lastBm === null) S.lastBm = m.bm;                   // first line we see: remember it, don't count it
+      else if (m.bm !== S.lastBm) {
+        const backwards = ((m.bm - S.lastBm) >>> 0) > 0x80000000;  // the clock went backwards: the Arduino restarted
+        S.lastBm = m.bm;
+        if (!backwards) onBeat(m.bm, m.t, now);
+      }
+    }
+    if (S.mode === 'measure' && m.t - S.t0 >= MEASURE_MS) finishMeasure(now);
+  }
+
+  function onBeat(bm, t, now) {
+    S.beatAt = now;
+    if (S.mode === 'waiting') {                                  // the first beat starts the clock
+      S.beats = [bm]; S.t0 = t;
+      setMode('measure', now);
+    } else if (S.mode === 'measure') {
+      S.beats.push(bm);
     }
   }
+
+  // ---- the process ---------------------------------------------------------
+  function press() {
+    const now = performance.now();
+    if (S.mode === 'idle' || S.mode === 'failed') {
+      S.beats = []; S.t0 = 0;
+      setMode('waiting', now);                                   // the sensor is live from now
+    }
+  }
+
+  function finishMeasure(now) {
+    const r = BNTSMeasure.summarize(S.beats);
+    if (!r) return fail(now);
+    S.res = r;
+    const spanS = Math.round(r.spanMs / 1000);
+    $('bpm-num').textContent = Math.round(r.avg);
+    $('basis').textContent = `Average of ${r.beats} beats over ${spanS} seconds`;
+    S.summary = { samples: r.rates, min: r.min, max: r.max, avg: r.avg, secs: spanS };
+    $('sum-avg').textContent = Math.round(r.avg);
+    $('sum-min').textContent = Math.round(r.min);
+    $('sum-max').textContent = Math.round(r.max);
+    $('sum-time').textContent = spanS < 60 ? `${spanS} s` : `${Math.floor(spanS / 60)}:${String(spanS % 60).padStart(2, '0')}`;
+    setMode('result', now);
+  }
+
+  function fail(now) { setMode('failed', now); }
 
   function setMode(mode, now) {
     S.mode = mode; S.modeAt = now;
-    for (const id of ['standby', 'detect', 'live', 'summary']) $(id).classList.toggle('on', id === mode);
-    if (mode === 'detect') { S.stageLowSince = 0; pipsOn = 0; for (const p of $('pips').children) p.className = ''; }
-    if (mode === 'live') {
-      S.shownBpm = S.bpm;                            // the first reading is ready the moment we go live
-      S.session = { samples: [S.bpm], startAt: now, nextSampleAt: now + SESSION_SAMPLE_MS };
-      S.lastHeard = now;
-      const v = $('verified'); v.classList.remove('show'); void v.offsetWidth; v.classList.add('show');   // "Heart rate verified"
-    }
+    const screen = SCREEN[mode];
+    for (const id of ['standby', 'measure', 'result', 'summary']) $(id).classList.toggle('on', id === screen);
+    $('measure').classList.toggle('waiting', mode === 'waiting');
+    if (mode === 'idle' || mode === 'failed') setStandbyText(mode);
   }
 
-  // The finger has gone: work out the results and show them for a few seconds.
-  function endSession(now) {
-    const samples = S.session.samples;
-    S.validRun = 0;
-    if (!samples.length) { setMode('standby', now); return; }
-    const sum = samples.reduce((a, v) => a + v, 0);
-    const secs = Math.max(0, Math.round((S.beatAt - S.session.startAt) / 1000)) + CONFIRM_SECONDS;
-    S.summary = { samples: samples.slice(), min: Math.min(...samples), max: Math.max(...samples),
-                  avg: Math.round(sum / samples.length), secs };
-    $('sum-avg').textContent = S.summary.avg;
-    $('sum-min').textContent = S.summary.min;
-    $('sum-max').textContent = S.summary.max;
-    $('sum-time').textContent = secs < 60 ? `${secs} s` : `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
-    S.summaryUntil = now + SUMMARY_MS;
-    setMode('summary', now);
+  // Standby wording, with a quick fade between the two messages.
+  let shownText = 'idle';
+  function setStandbyText(mode) {
+    if (mode === shownText) return;
+    shownText = mode;
+    const el = $('sb-text'); el.classList.add('swap');
+    setTimeout(() => {
+      $('sb-title').textContent = shownText === 'failed' ? 'No pulse found' : 'Press screen to start';
+      $('sb-sub').textContent = shownText === 'failed' ? 'Rest a finger on the sensor and try again' : 'to check your heart rate';
+      el.classList.toggle('press', shownText === 'idle');
+      el.classList.remove('swap');
+    }, 220);
   }
 
   // ---- canvas helpers ---------------------------------------------------------
@@ -141,13 +170,14 @@
   ];
   const HEART_CELLS = [];
   HEART.forEach((row, y) => [...row].forEach((c, x) => { if (c === 'X') HEART_CELLS.push([x, y]); }));
+  const HEART_PX = 9, HEART_PY = 8;
 
   // lub-dub pulse: 1 at each thump, decaying
   function lubdub(tb) {
     return Math.exp(-tb / 0.07) + (tb > 0.27 ? 0.6 * Math.exp(-(tb - 0.27) / 0.07) : 0);
   }
 
-  // ---- STANDBY animation ---------------------------------------------------------
+  // ---- IDLE animation ---------------------------------------------------------
   const cvSb = $('cv-standby');
   const particles = [];
   let lastT = 0, lastCycle = -1;
@@ -251,57 +281,25 @@
     ctx.globalAlpha = 1;
   }
 
-  // Standby wording: the usual prompt, or - for a few seconds after a finger was lifted before the heart rate was
-  // verified - a reminder to hold on a little longer.
-  let hintShown = false;
-  function updateStandbyText(now) {
-    const want = now < S.hintUntil;
-    if (want === hintShown) return;
-    hintShown = want;
-    const el = $('sb-text'); el.classList.add('swap');
-    setTimeout(() => {
-      $('sb-title').textContent = hintShown ? 'Keep your finger on the sensor' : 'Check your heart rate';
-      $('sb-sub').textContent = hintShown ? 'Hold until your heart rate appears' : 'Touch the sensor and hold';
-      el.classList.remove('swap');
-    }, 220);
-  }
+  // ---- heart + pulse graph (measure and result screens) -----------------------------------
+  const cvHeart = $('cv-heart'), cvMHeart = $('cv-m-heart'), cvWave = $('cv-wave'), cvWaveM = $('cv-wave-m');
 
-  // ---- DETECT screen: responds to every real beat -----------------------------------------
-  const cvDetect = $('cv-detect');
-  let pipsOn = 0;
-  function drawDetect(now) {
-    const age = (now - S.beatAt) / 1000;
-    const pulse = age < 0.5 ? Math.exp(-age / 0.09) : 0;
-    drawHeartOn(cvDetect, 1 + 0.2 * pulse, 0.58, (ctx, w, h) => {
-      // a ripple spreads from the heart with each real beat
-      if (age < 1.1) {
-        const r = Math.min(w, h) * (0.3 + 0.19 * age / 1.1);        // stays inside the canvas
-        ctx.beginPath(); ctx.arc(w / 2, h / 2, r, 0, 7);
-        ctx.strokeStyle = `rgba(25,193,202,${0.55 * (1 - age / 1.1)})`; ctx.lineWidth = Math.max(2, h * 0.012); ctx.stroke();
-        ctx.beginPath(); ctx.arc(w / 2, h / 2, r * 0.82, 0, 7);
-        ctx.strokeStyle = `rgba(207,194,224,${0.35 * (1 - age / 1.1)})`; ctx.stroke();
-      }
-    });
-    // one pixel lights for each steady beat counted so far
-    const pips = $('pips');
-    pips.classList.toggle('hidden', !S.hasProgress);
-    const want = Math.min(S.progress, pips.children.length);
-    if (want !== pipsOn) {
-      for (let i = 0; i < pips.children.length; i++) {
-        const p = pips.children[i];
-        const lit = i < want;
-        if (lit && !p.classList.contains('on')) { p.className = 'on'; void p.offsetWidth; p.classList.add('pop'); }
-        else if (!lit) p.className = '';
-      }
-      pipsOn = want;
+  function drawHeartOn(cv, s) {
+    const [ctx, w, h] = fit(cv);
+    ctx.clearRect(0, 0, w, h);
+    const cell = Math.min(w / HEART_PX, h / HEART_PY) * 0.98, gap = Math.max(1, cell * 0.09);
+    ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+    for (const [x, y] of HEART_CELLS) {
+      const px = w / 2 + (x + 0.5 - 4.5) * cell * s, py = h / 2 + (y + 0.5 - 4) * cell * s;
+      const sz = cell * s - gap;
+      ctx.fillStyle = HEART_COLOURS[(x + y * 2) % 4];
+      rr(ctx, px - sz / 2, py - sz / 2, sz, sz, cell * 0.16); ctx.fill(); ctx.stroke();
     }
   }
+  const beatPulse = age => (age < 0.5 ? 1 + 0.22 * Math.exp(-age / 0.09) : 1);
 
-  // ---- LIVE screen ---------------------------------------------------------------
-  const cvWave = $('cv-wave'), cvHeart = $('cv-heart');
-
-  function drawWave(now) {
-    const [ctx, w, h] = fit(cvWave);
+  function drawWave(cv, now) {
+    const [ctx, w, h] = fit(cv);
     ctx.clearRect(0, 0, w, h);
     const n = S.wave.length;
 
@@ -346,33 +344,27 @@
     ctx.beginPath(); ctx.arc(hx, hy, h * 0.028, 0, 7); ctx.fillStyle = LAV; ctx.fill();
   }
 
-  const HEART_PX = 9, HEART_PY = 8;
-  function drawHeartIcon(now) {
-    const age = (now - S.beatAt) / 1000;
-    const pulse = age < 0.5 ? Math.exp(-age / 0.09) : 0;
-    drawHeartOn(cvHeart, 1 + 0.22 * pulse);
-  }
-  function drawHeartOn(cv, s, fill = 0.98, before = null) {
-    const [ctx, w, h] = fit(cv);
-    ctx.clearRect(0, 0, w, h);
-    if (before) before(ctx, w, h);
-    const cell = Math.min(w / HEART_PX, h / HEART_PY) * fill, gap = Math.max(1, cell * 0.09);
-    ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-    for (const [x, y] of HEART_CELLS) {
-      const px = w / 2 + (x + 0.5 - 4.5) * cell * s, py = h / 2 + (y + 0.5 - 4) * cell * s;
-      const sz = cell * s - gap;
-      ctx.fillStyle = HEART_COLOURS[(x + y * 2) % 4];
-      rr(ctx, px - sz / 2, py - sz / 2, sz, sz, cell * 0.16); ctx.fill(); ctx.stroke();
-    }
+  const bar = (id, frac) => { $(id).style.width = (clamp(frac, 0, 1) * 100).toFixed(1) + '%'; };
+  const setText = (id, txt) => { const el = $(id); if (el.textContent !== txt) el.textContent = txt; };
+
+  // ---- MEASURE screen ---------------------------------------------------------------
+  function drawMeasure(now) {
+    drawHeartOn(cvMHeart, beatPulse((now - S.beatAt) / 1000));
+    drawWave(cvWaveM, now);
+    if (S.mode === 'waiting') { bar('m-bar', 0); return; }
+    const elapsed = clamp(S.dataT - S.t0, 0, MEASURE_MS);
+    setText('m-count', String(Math.max(0, Math.ceil((MEASURE_MS - elapsed) / 1000))));
+    const nb = S.beats.length;
+    setText('m-beats', now - S.beatAt > NO_BEAT_HINT_MS ? 'Keep your finger on the sensor' : `${nb} ${nb === 1 ? 'beat' : 'beats'}`);
+    bar('m-bar', elapsed / MEASURE_MS);
   }
 
-  let lastShown = -1;
-  function updateLiveText() {
-    // The Arduino already averages, cross-checks and only changes its reading every 3 s,
-    // so the display simply shows what it is given (with a quick count-up between values).
-    S.shownBpm += (S.bpm - S.shownBpm) * 0.25;
-    const v = Math.round(S.shownBpm);
-    if (v !== lastShown) { $('bpm-num').textContent = v; lastShown = v; }
+  // ---- RESULT screen ---------------------------------------------------------------
+  function drawResult(now) {
+    const period = 60000 / S.res.avg;                       // the heart beats at the measured rate
+    drawHeartOn(cvHeart, beatPulse((((now - S.modeAt) % period) / 1000)));
+    drawWave(cvWave, now);
+    bar('r-bar', 1 - (now - S.modeAt) / RESULT_MS);
   }
 
   // ---- SUMMARY screen ------------------------------------------------------------
@@ -382,7 +374,7 @@
     const sm = S.summary;
     if (!sm) return;
     drawHeartOn(cvSumHeart, 1);
-    $('sum-timer-bar').style.width = (clamp(1 - (now - S.modeAt) / SUMMARY_MS, 0, 1) * 100).toFixed(1) + '%';
+    bar('sum-bar', 1 - (now - S.modeAt) / SUMMARY_MS);
 
     const [ctx, w, h] = fit(cvSum);
     ctx.clearRect(0, 0, w, h);
@@ -405,7 +397,7 @@
     ctx.beginPath(); ctx.moveTo(padL * 0.5, Y(sm.avg)); ctx.lineTo(w - padR * 0.5, Y(sm.avg)); ctx.stroke();
     ctx.setLineDash([]);
 
-    // readings
+    // the heart rate at each beat
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
     if (n > 1) {
       const upto = reveal * (n - 1);
@@ -416,7 +408,7 @@
       ctx.strokeStyle = 'rgba(25,193,202,0.2)'; ctx.lineWidth = h * 0.034; ctx.stroke();
       ctx.strokeStyle = TEAL; ctx.lineWidth = Math.max(2.5, h * 0.011); ctx.stroke();
     }
-    // pixel markers on each reading; lowest = purple, highest = lavender
+    // pixel markers on each beat; lowest = purple, highest = lavender
     const sz = h * 0.05;
     sm.samples.forEach((v, i) => {
       if (n > 1 && i > reveal * (n - 1) + 0.001) return;
@@ -434,6 +426,7 @@
     const chip = $('chip');
     let msg = '';
     if (!S.connected)      msg = 'Sensor not connected — check the USB cable';
+    else if (S.oldFw)      msg = 'The Arduino has old firmware — flash it again';
     else if (S.wrong)      msg = "The Arduino isn't running the heart rate program — flash it again";
     else if (!S.receiving) msg = 'Waiting for data from the sensor…';
     chip.textContent = msg;
@@ -447,33 +440,21 @@
     if (ts - last < FRAME_MS - 2) return;
     last = ts;
     const now = performance.now();
+    const age = now - S.modeAt;
 
-    if (S.mode === 'live') {
-      // Record the readings for the results screen (only while beats are really arriving).
-      if (now >= S.session.nextSampleAt) {
-        S.session.nextSampleAt = now + SESSION_SAMPLE_MS;
-        if (now - S.beatAt < 1500) S.session.samples.push(S.bpm);
-      }
-      // Finger gone? (The Arduino has already waited 3 s for it to come back.)
-      if (now - S.lastHeard > END_AFTER_MS || now - S.lastValid > HOLD_MAX_MS) endSession(now);
-    } else if (S.mode === 'summary' && now >= S.summaryUntil) {
-      setMode('standby', now); S.validRun = 0;
-    }
-    // A finger steady for 1 s (stage 1) opens the DETECT screen, even if results are showing; if the signal goes
-    // before the heart rate is verified, go back to standby and remind them to hold on.
-    if ((S.mode === 'standby' || S.mode === 'summary') && S.stage === 1 && S.bpm >= 0 && S.validRun === 0) { setMode('detect', now); }
-    if (S.mode === 'detect') {
-      if (S.stage >= 1) S.stageLowSince = 0;
-      else if (!S.stageLowSince) S.stageLowSince = now;
-      else if (now - S.stageLowSince > DETECT_LOST_MS) { S.hintUntil = now + HINT_MS; setMode('standby', now); S.validRun = 0; }
-    }
-    if (S.reloadPending && S.mode === 'standby' && now - S.modeAt > 2000) location.reload();
+    // timers
+    if (S.mode === 'waiting' && age > WAIT_MS) fail(now);                       // nobody put a finger on
+    else if ((S.mode === 'waiting' || S.mode === 'measure') && now - Math.max(S.lastDataAt, S.modeAt) > NO_DATA_MS) fail(now);   // Arduino went quiet
+    else if (S.mode === 'result' && age >= RESULT_MS) setMode('summary', now);
+    else if (S.mode === 'summary' && age >= SUMMARY_MS) setMode('idle', now);
+    else if (S.mode === 'failed' && age >= FAILED_MS) setMode('idle', now);
+    if (S.reloadPending && S.mode === 'idle' && age > 2000) location.reload();   // pick up an update while idle
 
     const fading = now - S.modeAt < 800;
-    if (S.mode === 'standby' || fading) { drawStandby(now / 1000); updateStandbyText(now); }
-    if (S.mode === 'detect' || fading) drawDetect(now);
-    if (S.mode === 'live' || fading) { drawWave(now); drawHeartIcon(now); updateLiveText(); }
-    if (S.mode === 'summary' || fading) drawSummary(now);
+    if (SCREEN[S.mode] === 'standby' || fading) drawStandby(now / 1000);
+    if (SCREEN[S.mode] === 'measure' || (fading && S.mode !== 'idle')) drawMeasure(now);
+    if (S.res && (S.mode === 'result' || (fading && S.mode === 'summary'))) drawResult(now);
+    if (S.mode === 'summary' || (fading && S.mode === 'idle' && S.summary)) drawSummary(now);
     updateChip();
 
     frames++;
@@ -481,13 +462,16 @@
       fps = frames; frames = 0; fpsAt = now;
       if (document.body.classList.contains('debug')) {
         $('debug').textContent =
-          `mode ${S.mode}  fps ${fps}\nbpm ${S.bpm}  amp ${S.amp}  stage ${S.stage}  progress ${S.progress}\nwave ${S.wave.length}  msgs ${S.msgs}\n` +
+          `mode ${S.mode}  fps ${fps}  beats ${S.beats.length}\nwave ${S.wave.length}  msgs ${S.msgs}  bm ${S.lastBm}\n` +
           `conn ${S.connected}  rx ${S.receiving}${S.simulated ? '  (simulated)' : ''}`;
       }
     }
   }
 
-  // The touchscreen is display-only: swallow menus, drags, zoom and scroll gestures.
+  // Press the screen (or Space / Enter) to start. Everything else about the touchscreen is switched off: no menus,
+  // drags, zoom or scrolling.
+  document.addEventListener('pointerdown', press);
+  document.addEventListener('keydown', e => { if (e.code === 'Space' || e.code === 'Enter') press(); });
   for (const ev of ['contextmenu', 'dragstart', 'selectstart', 'gesturestart', 'wheel'])
     document.addEventListener(ev, e => e.preventDefault(), { passive: false });
   for (const ev of ['touchstart', 'touchmove'])

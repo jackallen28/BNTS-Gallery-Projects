@@ -1,7 +1,7 @@
 /* BNTS heart rate display.
  *
  * The process (nothing is filtered; every beat the Arduino reports is used):
- *   1. IDLE     "Press screen to start" (animated pixel heart).
+ *   1. IDLE     How to wear the wristband, then "press the screen" (animated pixel heart).
  *   2. MEASURE  After a press the sensor is live. Waits for the first beat, then records every beat for 10 seconds
  *               (heart beats with each real beat, pulse graph, countdown).
  *   3. RESULT   The average heart rate, shown for 10 seconds.
@@ -128,9 +128,10 @@
     shownText = mode;
     const el = $('sb-text'); el.classList.add('swap');
     setTimeout(() => {
-      $('sb-title').textContent = shownText === 'failed' ? 'No pulse found' : 'Press screen to start';
-      $('sb-sub').textContent = shownText === 'failed' ? 'Rest a finger on the sensor and try again' : 'to check your heart rate';
+      $('sb-title').textContent = shownText === 'failed' ? 'No pulse found' : 'Wear the wristband with the sensor pressing on the top of your wrist';
+      $('sb-sub').textContent = shownText === 'failed' ? 'Rest a finger on the sensor and try again' : 'Then press the screen to begin measuring your heart rate';
       el.classList.toggle('press', shownText === 'idle');
+      el.classList.toggle('long', shownText === 'idle');                       // the longer message gets smaller type
       el.classList.remove('swap');
     }, 220);
   }

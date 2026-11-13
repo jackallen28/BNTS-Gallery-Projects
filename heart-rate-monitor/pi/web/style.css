@@ -54,8 +54,12 @@ canvas { display: block; }
 }
 #sb-text.swap { opacity: 0; }
 
-#sb-text.press #sb-title { animation: breathe 2.2s ease-in-out infinite; }
+#sb-text.press #sb-sub { animation: breathe 2.2s ease-in-out infinite; }          /* the "press the screen" line gently pulses */
 @keyframes breathe { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.04); opacity: .86; } }
+
+#sb-text.long { top: 63%; }
+#sb-text.long #sb-title { font-size: 4.5vh; line-height: 1.2; max-width: 92%; margin: 0 auto; text-wrap: balance; }
+#sb-text.long #sb-sub { margin-top: 1.4vh; font-size: 3.4vh; }
 
 #sb-title {
   font-size: 6.4vh; font-weight: 800; letter-spacing: .01em;

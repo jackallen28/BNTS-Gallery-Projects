@@ -3,11 +3,12 @@
 A pulse sensor on an Arduino sends every heartbeat over USB to a Raspberry Pi, and the Pi's 7" touchscreen runs a simple
 press-to-start heart rate check in the BNTS colours:
 
-1. **Press screen to start** - a beating pixel heart waits to be pressed.
+1. **Start screen** - a beating pixel heart. It says to wear the wristband with the sensor pressing on the top of your wrist,
+   then to press the screen to begin measuring your heart rate.
 2. **Measuring** - after the press the sensor is live. The screen asks for a finger, and when the first beat arrives it
    records **every beat for 10 seconds**: the heart beats with each real beat, the pulse graph scrolls, and a countdown runs.
 3. **Your heart rate** - the **average** heart rate with *"Average of N beats over S seconds"*, shown for **10 seconds**.
-4. Back to **Press screen to start**.
+4. Back to the start screen.
 
 If no pulse is found (no finger, or fewer than 3 beats), the screen says *"No pulse found"* for 5 seconds and starts over.
 
@@ -220,7 +221,7 @@ Strong direct sunlight on the sensor can also swamp it.
 2. pulls the latest code from GitHub into your clone (`git pull --ff-only`),
 3. if anything is new, copies it to `/opt/bnts-heart` and restarts the display server.
 
-The screen reloads itself to pick up the new version, but only while it is idle on "Press screen to start", so it never
+The screen reloads itself to pick up the new version, but only while it is idle on the start screen, so it never
 interrupts a measurement. The display always starts: with no internet, or if the pull fails, the version already installed keeps
 running.
 
